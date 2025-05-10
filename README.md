@@ -44,6 +44,7 @@ To execute the entire pipeline, run the main launch script from the root directo
 
 ```bash
 bash launch.sh
+```
 
 
 

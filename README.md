@@ -20,7 +20,7 @@ This repository provides a showcase for generating simulated genotypes and compu
     *   Position of selection should equal to {selected variant relative position} times simulation length, e.g. 0.5*3mb=1.5mb
 
 
-    Example structure of `00config.json`:
+    Example of `00config.json`:
 
 
     ```json

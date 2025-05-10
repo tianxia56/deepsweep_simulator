@@ -7,16 +7,9 @@ This repository provides a showcase for generating simulated genotypes and compu
 *   **Docker:** This pipeline relies on Docker to run containerized tools. If you don't have Docker installed, please follow the official installation guide for your operating system:
     *   [Install Docker Engine](https://docs.docker.com/engine/install/)
 
-## Setup
+## How to use
 
-1.  **Clone the Repository (if applicable):**
-    If you haven't already, clone this repository to your local machine.
-    ```bash
-    # git clone <repository_url>
-    # cd deepsweep_simulator
-    ```
-
-2.  **Configuration:**
+  **Configuration:**
     Edit the `00config.json` file in the root directory to set your desired simulation parameters. This file controls aspects like:
     *   Number of neutral and selection simulations
     *   Demographic model file
@@ -40,11 +33,9 @@ This repository provides a showcase for generating simulated genotypes and compu
     }
     ```
 
-3.  **Ensure Necessary Files are Present:**
+  **Ensure Necessary Files are Present:**
     *   Make sure your demographic model file is located in the `demographic_models/` directory.
     *   Make sure your recombination map file (0 values are not allowed) is present in the project root directory.
-
-## Running the Pipeline
 
 To execute the entire pipeline, run the main launch script from the root directory of this project:
 

@@ -1,6 +1,6 @@
 # DeepSweep Simulator Showcase (Local Execution)
 
-This repository provides a showcase for running a series of simulation and analysis steps, originally designed for a cluster environment, on a local machine in a linear fashion.
+This repository provides a showcase for generating simulated genotypes and compute population genetics statistics to detect selective signatures, originally designed for a cluster environment, on a local machine in a linear fashion. 
 
 ## Requirements
 

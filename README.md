@@ -16,8 +16,9 @@ This repository provides a showcase for generating simulated genotypes and compu
     *   Demographic model file
     *   Selective sweep parameters: pop_event sweep_mult \"sweep\" {selected pop} {derived allele age by generations ago} {selection coefficient} {selected variant relative position} {final daf range}
     *   Target population id for analysis, versatile to include/exclude pops in the demographic model
-    *   Position of selection
     *   Simulation length
+    *   Position of selection should equal to {selected variant relative position} times simulation length, e.g. 0.5*3mb=1.5mb
+
 
     Example structure of `00config.json`:
 

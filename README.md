@@ -36,7 +36,7 @@ This repository provides a showcase for generating simulated genotypes and compu
     }
     ```
 
-3.  **Ensure Necessary Files are Present:**
+2.  **Ensure Necessary Files are Present:**
     *   Make sure your demographic model file is located in the `demographic_models/` directory.
     *   Make sure your recombination map file (0 values are not allowed) is present in the project root directory.
 
@@ -44,3 +44,9 @@ To execute the entire pipeline, run the main launch script from the root directo
 
 ```bash
 bash launch.sh
+
+
+
+3. **Output:**
+    *   Simulation summary statistics.
+    *   Selected variant summary statistics with specific sweep input parameters (derived age, selected age, selection coefficient).

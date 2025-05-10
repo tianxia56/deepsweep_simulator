@@ -1,0 +1,11 @@
+{
+    "selected_simulation_number": 5,
+    "simulation_serial_number": 123,
+    "neutral_simulation_number": 5,
+    "demographic_model": "jv_default_112115_825am.par",
+    "selective_sweep": "pop_event sweep_mult \"sweep\" 1 U(0, 5000) E(20) .5 .05-.95",
+    "selected_pop": 1,
+    "pos_sel_position": 500000,
+    "simulation_length": 1000000,
+    "pop_ids": [1, 2, 3, 4] 
+}

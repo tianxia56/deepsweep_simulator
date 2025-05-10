@@ -10,7 +10,7 @@ This repository provides a showcase for generating simulated genotypes and compu
 ## How to use
 
 1.  **Configuration:**
-  ```
+
     Edit the `00config.json` file in the root directory to set your desired simulation parameters. This file controls aspects like:
     *   Number of neutral and selection simulations
     *   Demographic model file
@@ -18,8 +18,10 @@ This repository provides a showcase for generating simulated genotypes and compu
     *   Target population for analysis
     *   Position of selection
     *   Simulation length
-```
+
     Example structure of `00config.json`:
+
+
     ```json
     {
         "selected_simulation_number": 2,
@@ -34,7 +36,7 @@ This repository provides a showcase for generating simulated genotypes and compu
     }
     ```
 
-2.  **Ensure Necessary Files are Present:**
+3.  **Ensure Necessary Files are Present:**
     *   Make sure your demographic model file is located in the `demographic_models/` directory.
     *   Make sure your recombination map file (0 values are not allowed) is present in the project root directory.
 

@@ -15,7 +15,7 @@ This repository provides a showcase for generating simulated genotypes and compu
     *   Number of neutral and selection simulations
     *   Demographic model file
     *   Selective sweep parameters: pop_event sweep_mult \"sweep\" {selected pop} {derived allele age by generations ago} {selection coefficient} {selected variant relative position} {final daf range}
-    *   Target population for analysis
+    *   Target population id for analysis, versatile to include/exclude pops in the demographic model
     *   Position of selection
     *   Simulation length
 

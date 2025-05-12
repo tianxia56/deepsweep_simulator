@@ -6,6 +6,12 @@ This repository provides a showcase for generating simulated genotypes and compu
 
 *   **Docker:** This pipeline relies on Docker to run containerized tools. If you don't have Docker installed, please follow the official installation guide for your operating system:
     *   [Install Docker Engine](https://docs.docker.com/engine/install/)
+    *   build docker image by save ```Dockerfile``` in any pwd and ```docker build -t deepsweep_env_debugged_test:latest .```
+    *   ```docker run -it --rm deepsweep_env_debugged_test:latest bash``` launch interactive shell to test
+    *   isafe -h
+    *   ihsbin
+    *   selscan --help
+    *   R --version
 
 ## How to use
 

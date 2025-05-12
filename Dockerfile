@@ -1,9 +1,9 @@
-# Dockerfile for DeepSweep Test Environment (Based on User's Debugged Steps)
+# Dockerfile for DeepSweep Test Environment
 # Stage 1: Base setup from Dockerfile.base content
 FROM python:3.9
 
 # Updated Description Label:
-LABEL description="Test environment with iSAFE, hapbin, selscan, R (debugged steps)"
+LABEL description="Test environment with iSAFE, hapbin, selscan, R "
 
 # Set DEBIAN_FRONTEND to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -36,7 +36,7 @@ WORKDIR /opt/tools_src
 
 # --- Stage 2: Install Software (Mirroring temporary container steps for TEST build) ---
 
-# Install iSAFE (mirroring user commands)
+# Install iSAFE 
 RUN echo ">>> [TEST BUILD] Ensuring clean state for iSAFE installation..." \
     && rm -rf iSAFE \
     && echo ">>> [TEST BUILD] Installing iSAFE..." \
@@ -44,11 +44,10 @@ RUN echo ">>> [TEST BUILD] Ensuring clean state for iSAFE installation..." \
     && cd iSAFE \
     && pip install --no-cache-dir -r requirements.txt \
     && python setup.py install \
-    # No test here as it requires user interaction/output checking
     && cd .. \
     && echo ">>> [TEST BUILD] iSAFE installation complete (source retained in /opt/tools_src/iSAFE)."
 
-# Install hapbin (mirroring user commands)
+# Install hapbin 
 RUN echo ">>> [TEST BUILD] Ensuring clean state for hapbin installation..." \
     && rm -rf hapbin \
     && echo ">>> [TEST BUILD] Installing hapbin..." \
@@ -64,13 +63,11 @@ RUN echo ">>> [TEST BUILD] Ensuring clean state for hapbin installation..." \
     && echo ">>> [TEST BUILD] Updating shared library cache for hapbin..." \
     # ldconfig is crucial
     && ldconfig \
-    # No test here as it requires user interaction/output checking
     && cd ../.. \
     && echo ">>> [TEST BUILD] hapbin installation complete (source retained in /opt/tools_src/hapbin)."
 
-# Install selscan (mirroring user commands)
+# Install selscan
 RUN echo ">>> [TEST BUILD] Cloning selscan..." \
-    # Optional clean based on user comment
     # && rm -rf selscan
     && git clone https://github.com/szpiech/selscan.git \
     && cd selscan \
@@ -79,7 +76,6 @@ RUN echo ">>> [TEST BUILD] Cloning selscan..." \
     && make clean \
     && make \
     && echo ">>> [TEST BUILD] Selscan compilation complete. Verifying compiled files in src/..." \
-    # Exact check from user script
     && if [ ! -f ./selscan ] || [ ! -f ./norm ]; then \
          echo "ERROR: [TEST BUILD] Compiled selscan or norm not found in ./src/ after make." >&2; \
          echo "Listing current directory (should be src/):" >&2; \
@@ -92,17 +88,15 @@ RUN echo ">>> [TEST BUILD] Cloning selscan..." \
     && cp ./selscan /usr/local/bin/ \
     && cp ./norm /usr/local/bin/ \
     && cd .. \
-    # No test here as it requires user interaction/output checking
     && echo ">>> [TEST BUILD] selscan installation from source complete (source retained in /opt/tools_src/selscan)."
 
-# Install R Packages (mirroring user commands)
+# Install R Packages
 RUN echo ">>> [TEST BUILD] Installing R packages..." \
-    # R commands exactly as provided by user
     && R -e "install.packages(c('dplyr', 'readr', 'stringr', 'tidyr', 'argparse', 'ggplot2', 'ggrepel', 'gggenes', 'BiocManager'), repos='https://cloud.r-project.org/', Ncpus=$(nproc))" \
     && R -e "BiocManager::install('biomaRt', update=FALSE, ask=FALSE)" \
     && echo ">>> [TEST BUILD] R and R package installation complete."
 
-# Clean Up Apt Caches (mirroring user command)
+# Clean Up Apt Caches 
 RUN echo ">>> [TEST BUILD] Cleaning up apt caches..." \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \

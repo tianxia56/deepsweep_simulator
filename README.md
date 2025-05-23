@@ -20,7 +20,7 @@ This repository provides a showcase for generating simulated genotypes and compu
     Edit the `00config.json` file in the root directory to set your desired simulation parameters. This file controls aspects like:
     *   Number of neutral and selection simulations
     *   Demographic model file
-    *   Selective sweep parameters: pop_event sweep_mult \"sweep\" {selected pop} {derived allele age by generations ago} {selection coefficient} {selected variant relative position} {final daf range}
+    *   Selective sweep parameters: pop_event sweep_mult \"sweep\" {pop which derived allele emerged} {derived allele age by generations ago} {selection coefficient} {selected variant relative position} {final daf range} {selected pop} {selection occured generations ago}
     *   Target population id for analysis, versatile to include/exclude pops in the demographic model
     *   Simulation length
     *   Position of selection should equal to {selected variant relative position} times simulation length, e.g. 0.5*3mb=1.5mb
@@ -35,7 +35,7 @@ This repository provides a showcase for generating simulated genotypes and compu
         "simulation_serial_number": 1,
         "neutral_simulation_number": 2,
         "demographic_model": "jv_default_112115_825am.par",
-        "selective_sweep": "pop_event sweep_mult \"sweep\" 1 U(0, 5000) E(20) .5 .05-.95",
+        "selective_sweep": "pop_event sweep_mult_standing \"sweep\" 1 U(0, 5000) E(20) .5 .05-.95 1 U(0, 5000)",
         "selected_pop": 1,
         "pos_sel_position": 1500000,
         "simulation_length": 3000000,

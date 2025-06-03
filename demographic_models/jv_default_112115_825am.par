@@ -1,6 +1,6 @@
-length 1000000
+length 3000000
 mutation_rate 1.25e-08
-recomb_file ./recom.recom
+recomb_file ../test_recom.recom
 gene_conversion_relative_rate 2.3
 
 pop_define 1 YRI
@@ -91,3 +91,4 @@ pop_event migration_rate "no mig CEU->BEB" 2 4 149 0
 pop_event migration_rate "no mig BEB->CEU" 4 2 149 0
 pop_event migration_rate "no mig CHB->BEB" 3 4 149 0
 pop_event migration_rate "no mig BEB->CHB" 4 3 149 0
+

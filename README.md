@@ -22,7 +22,6 @@ This repository provides a showcase for generating simulated genotypes and compu
     *   Demographic model file
     *   recombination map, simulator will randomly choose a window per simulation length from realistic recombination map (chr1 here),  will automatically sync in .par file
     *   Selective sweep parameters: pop_event sweep_mult_standing \"sweep\" {derive pop} {derived allele age by generations ago} {selection coefficient} {selected variant relative position} {final daf range} {selection begin pop} {selection begin generations ago}
-    *   Target population id for analysis, versatile to include/exclude pops in the demographic model
     *   Simulation length, will automatically sync in .par file
     *   selected_pop need to be {selection begin pop}
     *   pop_ids include pops taken into computation

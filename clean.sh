@@ -10,3 +10,4 @@ rm -rf hapbin/*
 rm -rf bin/*
 rm -rf norm/*
 rm -rf two_pop_stats/*
+rm -f demographic_models/*.bak_*

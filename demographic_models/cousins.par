@@ -3,9 +3,9 @@
 # --------------------------------------------------------------------
 # Global parameters
 # --------------------------------------------------------------------
-length 3000000
+length 1000000
 mutation_rate 1.25e-8
-recomb_file ../test_recom.recom
+recomb_file test_recom.recom
 gene_conversion_relative_rate 2.3
 # --------------------------------------------------------------------
 # Population definitions

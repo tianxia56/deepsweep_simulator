@@ -49,29 +49,38 @@ else
 fi
 log_message "Clean up complete (or skipped)."
 
-# Step 2: Validate AND UPDATE .par file length
-log_message "Step 2: Validating/Updating simulation length in .par file from ${CONFIG_FILE}..."
+# Step 2: Validate AND UPDATE .par file from config
+log_message "Step 2: Validating/Updating .par file from ${CONFIG_FILE}..."
 PAR_FILE_BASENAME=""
 JSON_SIM_LENGTH=""
+JSON_RECOM_MAP=""
 if ! command -v jq &> /dev/null; then
     log_message "Warning: jq command not found. Attempting Python fallback."
-    PAR_FILE_BASENAME=$(python3 -c "import sys, json; print(json.load(open(sys.argv[1]))['demographic_model'])" "${CONFIG_FILE}")
+    PAR_FILE_BASENAME=$(python3 -c "import sys, json; print(json.load(open(sys.argv[1])).get('demographic_model'))" "${CONFIG_FILE}")
     PYTHON_EXIT_CODE_1=$?
-    JSON_SIM_LENGTH=$(python3 -c "import sys, json; print(json.load(open(sys.argv[1]))['simulation_length'])" "${CONFIG_FILE}")
+    JSON_SIM_LENGTH=$(python3 -c "import sys, json; print(json.load(open(sys.argv[1])).get('simulation_length'))" "${CONFIG_FILE}")
     PYTHON_EXIT_CODE_2=$?
-    if [ $PYTHON_EXIT_CODE_1 -ne 0 ] || [ $PYTHON_EXIT_CODE_2 -ne 0 ] || [ -z "${PAR_FILE_BASENAME}" ] || [ "${PAR_FILE_BASENAME}" = "null" ] || [ -z "${JSON_SIM_LENGTH}" ] || [ "${JSON_SIM_LENGTH}" = "null" ]; then
+    JSON_RECOM_MAP=$(python3 -c "import sys, json; print(json.load(open(sys.argv[1])).get('recombination_map'))" "${CONFIG_FILE}")
+    PYTHON_EXIT_CODE_3=$?
+    if [ $PYTHON_EXIT_CODE_1 -ne 0 ] || [ $PYTHON_EXIT_CODE_2 -ne 0 ] || [ $PYTHON_EXIT_CODE_3 -ne 0 ] || [ -z "${PAR_FILE_BASENAME}" ] || [ "${PAR_FILE_BASENAME}" = "None" ] || [ -z "${JSON_SIM_LENGTH}" ] || [ "${JSON_SIM_LENGTH}" = "None" ] || [ -z "${JSON_RECOM_MAP}" ] || [ "${JSON_RECOM_MAP}" = "None" ]; then
          log_message "ERROR: Python fallback failed to read required config values from ${CONFIG_FILE}."
          exit 1
     fi
 else
     PAR_FILE_BASENAME=$(jq -r '.demographic_model' "${CONFIG_FILE}")
     JSON_SIM_LENGTH=$(jq -r '.simulation_length' "${CONFIG_FILE}")
+    JSON_RECOM_MAP=$(jq -r '.recombination_map' "${CONFIG_FILE}")
 fi
+
 if [ -z "${PAR_FILE_BASENAME}" ] || [ "${PAR_FILE_BASENAME}" = "null" ]; then log_message "ERROR: Could not read 'demographic_model' from ${CONFIG_FILE}."; exit 1; fi
 if [ -z "${JSON_SIM_LENGTH}" ] || [ "${JSON_SIM_LENGTH}" = "null" ]; then log_message "ERROR: Could not read 'simulation_length' from ${CONFIG_FILE}."; exit 1; fi
+if [ -z "${JSON_RECOM_MAP}" ] || [ "${JSON_RECOM_MAP}" = "null" ]; then log_message "ERROR: Could not read 'recombination_map' from ${CONFIG_FILE}."; exit 1; fi
 if ! [[ "${JSON_SIM_LENGTH}" =~ ^[0-9]+$ ]]; then log_message "ERROR: 'simulation_length' ('${JSON_SIM_LENGTH}') from ${CONFIG_FILE} is not a valid integer."; exit 1; fi
+
 PAR_FILE_PATH="demographic_models/${PAR_FILE_BASENAME}"
 if [ ! -f "${PAR_FILE_PATH}" ]; then log_message "ERROR: Demographic model file '${PAR_FILE_PATH}' not found!"; exit 1; fi
+
+# --- Sub-step: Update simulation length ---
 PAR_FILE_LENGTH=$(grep -E "^length[[:space:]]+" "${PAR_FILE_PATH}" | awk '{print $2}')
 log_message "Target simulation_length from config: ${JSON_SIM_LENGTH}"
 if [ -n "${PAR_FILE_LENGTH}" ]; then log_message "Current length in .par file: ${PAR_FILE_LENGTH}"; fi
@@ -83,7 +92,24 @@ if [ "${PAR_FILE_LENGTH}" != "${JSON_SIM_LENGTH}" ]; then
         if [ "${NEW_PAR_FILE_LENGTH}" == "${JSON_SIM_LENGTH}" ]; then log_message "SUCCESS: .par file length updated and verified."; else log_message "ERROR: Failed to verify .par file length update."; exit 1; fi
     else log_message "ERROR: sed command failed to update .par file length."; exit 1; fi
 else log_message "SUCCESS: .par file length already matches config (${JSON_SIM_LENGTH})."; fi
-log_message "Validation/Update of .par file length complete."
+
+# --- Sub-step: Update recombination file ---
+log_message "---"
+RECOM_FILENAME=$(basename "${JSON_RECOM_MAP}")
+TARGET_RECOM_PATH="${RECOM_FILENAME}"
+CURRENT_RECOM_PATH=$(grep -E "^recomb_file[[:space:]]+" "${PAR_FILE_PATH}" | awk '{print $2}')
+log_message "Target recomb_file from config: ${TARGET_RECOM_PATH}"
+if [ -n "${CURRENT_RECOM_PATH}" ]; then log_message "Current recomb_file in .par file: ${CURRENT_RECOM_PATH}"; fi
+if [ "${CURRENT_RECOM_PATH}" != "${TARGET_RECOM_PATH}" ]; then
+    log_message "INFO: Updating .par file recomb_file to '${TARGET_RECOM_PATH}'..."
+    cp "${PAR_FILE_PATH}" "${PAR_FILE_PATH}.bak_$(date +%Y%m%d_%H%M%S)"
+    sed -i.bak_sed_op "s|^recomb_file[[:space:]].*|recomb_file ${TARGET_RECOM_PATH}|" "${PAR_FILE_PATH}"
+    if [ $? -eq 0 ]; then rm -f "${PAR_FILE_PATH}.bak_sed_op" ; NEW_RECOM_PATH=$(grep -E "^recomb_file[[:space:]]+" "${PAR_FILE_PATH}" | awk '{print $2}')
+        if [ "${NEW_RECOM_PATH}" == "${TARGET_RECOM_PATH}" ]; then log_message "SUCCESS: .par file recomb_file updated and verified."; else log_message "ERROR: Failed to verify .par file recomb_file update."; exit 1; fi
+    else log_message "ERROR: sed command failed to update .par file recomb_file."; exit 1; fi
+else log_message "SUCCESS: .par file recomb_file already matches config ('${TARGET_RECOM_PATH}')."; fi
+
+log_message "Validation/Update of .par file complete."
 
 # Step 3: Make haplotypes
 log_message "Step 3: Generating neutral simulations (01_cosi_neut.sh)..."

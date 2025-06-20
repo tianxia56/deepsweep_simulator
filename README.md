@@ -6,6 +6,7 @@ This repository provides a showcase for generating simulated genotypes and compu
 
 *   **Docker:** This pipeline relies on Docker to run containerized tools. If you don't have Docker installed, please follow the official installation guide for your operating system:
     *   [Install Docker Engine](https://docs.docker.com/engine/install/)
+    *   cosi2 (https://github.com/broadinstitute/cosi2) image will be pulled from its offical source: quay.io/ilya_broad/dockstore-tool-cosi2:latest
     *   Can build or customize your deepsweep env docker image by saving ```Dockerfile``` in any pwd, edit and ```docker build -t deepsweep_env_debugged_test:latest .```
     *   ```docker run -it --rm deepsweep_env_debugged_test:latest bash``` launch interactive shell to test
     *   isafe -h

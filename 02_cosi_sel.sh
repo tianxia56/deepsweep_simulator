@@ -41,7 +41,7 @@ if [ -z "$RECOMBINATION_MAP_FILE_PATH" ] || [ "$RECOMBINATION_MAP_FILE_PATH" = "
 DEMOGRAPHIC_MODEL_DIR_REL_PATH="demographic_models"
 SELECTED_OUTPUT_DIR_NAME="selected_sims"
 RUNTIME_DIR_NAME="runtime"
-DOCKER_IMAGE="docker.io/tx56/cosi"
+DOCKER_IMAGE="quay.io/ilya_broad/dockstore-tool-cosi2:latest"
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---

@@ -1,9 +1,9 @@
 # https://www-nature-com.ezp-prod1.hul.harvard.edu/articles/nmeth.4606/figures/17 
 # https://www-ncbi-nlm-nih-gov.ezp-prod1.hul.harvard.edu/pubmed/21730125?dopt=Abstract #-> Table 2, Fig 4
 
-length 3000000
+length 1000000
 mutation_rate 1.25e-08
-recomb_file ../test_recom.recom
+recomb_file test_recom.recom
 gene_conversion_relative_rate 2.3
 
 

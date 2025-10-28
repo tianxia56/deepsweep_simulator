@@ -1,7 +1,43 @@
 #!/bin/bash
 
+# --- Bulletproof Bash and Conda Activation ---
+# 1. Ensure the script is running with Bash, not sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    # Re-execute the script with the same arguments using bash.
+    echo "Re-executing with /bin/bash..." >&2
+    exec /bin/bash "$0" "$@"
+fi
+
+# 2. Manually find and activate the Conda environment by manipulating the PATH.
+# This is more reliable in non-interactive scripts than 'conda activate'.
+ENV_NAME="deepsweep_simulator"
+echo "Attempting to set PATH for Conda environment: ${ENV_NAME}"
+
+# Find the full path to the Conda environment
+CONDA_ENV_PATH=$(conda info --envs | grep "${ENV_NAME}" | awk '{print $NF}')
+
+# Check if the environment path was found
+if [ -z "${CONDA_ENV_PATH}" ]; then
+    echo "ERROR: Could not find Conda environment path for '${ENV_NAME}'." >&2
+    exit 1
+fi
+
+# Check if the environment's bin directory exists
+if [ ! -d "${CONDA_ENV_PATH}/bin" ]; then
+    echo "ERROR: bin directory not found in '${CONDA_ENV_PATH}'." >&2
+    exit 1
+fi
+
+# Prepend the environment's bin directory to the PATH
+export PATH="${CONDA_ENV_PATH}/bin:${PATH}"
+
+echo "Successfully set PATH for Conda environment."
+# --- End of Activation Block ---
+
+
 # This script normalizes XPEHH scores for SELECTION simulations using pre-computed
 # normalization bins and then calculates the maximum normalized XPEHH across pairs.
+# This version runs all commands directly on the host system without Docker.
 
 # --- Python Helper Script Name ---
 PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME="norm_xpehh_max_core.py"
@@ -13,12 +49,32 @@ LOG_FILE="${LOG_DIR}/normalize_xpehh_max.log"
 mkdir -p "${LOG_DIR}"
 exec &> >(tee -a "${LOG_FILE}")
 
-# --- Helper Functions (for host script) ---
+# --- Helper Functions ---
 log_message() {
     local type="$1"
     local message="$2"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${type}] - ${message}"
 }
+
+# --- Initial Setup ---
+log_message "INFO" "Host Script (10_normalize_xpehh_max.sh) Started: $(date)"
+
+# --- Local Dependency Checks ---
+log_message "INFO" "Checking for local dependencies..."
+log_message "DEBUG" "Python interpreter being used is: $(which python3)"
+if ! command -v python3 &> /dev/null; then
+    log_message "ERROR" "'python3' command not found. Python 3 is required."
+    exit 1
+fi
+if ! python3 -c "import pandas" &> /dev/null; then
+    log_message "ERROR" "Python 'pandas' library not found. Please install it (e.g., 'pip install pandas')."
+    exit 1
+fi
+if ! python3 -c "import numpy" &> /dev/null; then
+    log_message "ERROR" "Python 'numpy' library not found. Please install it (e.g., 'pip install numpy')."
+    exit 1
+fi
+log_message "INFO" "All local dependencies found."
 
 # --- Host Configuration ---
 CONFIG_FILE="00config.json"
@@ -42,19 +98,14 @@ fi
 if [ -z "$POP1_REF" ] || [ "$POP1_REF" = "null" ]; then log_message "ERROR_CONFIG" "'selected_pop' not found or null in ${CONFIG_FILE}."; exit 1; fi
 if [ ${#POP_IDS_ARRAY[@]} -eq 0 ]; then log_message "ERROR_CONFIG" "'pop_ids' not found or empty in ${CONFIG_FILE}."; exit 1; fi
 
-# CSV file to get sim_ids from (output of XPEHH map/hap gen for selection sims)
 INPUT_CSV_BASENAME="xpehh.sel.map_hap_gen.runtime.csv" 
-
-# Directories
-HAPBIN_DIR="hapbin"                     # Input XPEHH .out files (from neutral sims, processed by script 05)
-BIN_DIR="bin"                           # Input normalization bin files (from script 08)
-NORM_OUTPUT_DIR="norm"                  # Output for normalized stats & max_xpehh
+HAPBIN_DIR="hapbin"
+BIN_DIR="bin"
+NORM_OUTPUT_DIR="norm"
 RUNTIME_DIR="runtime"
-DOCKER_IMAGE_PYXPEHH="docker.io/tx56/deepsweep_simulator:latest" # Assumed to have Python, pandas, numpy
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---
-log_message "INFO" "Host Script (10_normalize_xpehh_max.sh) Started: $(date)"
 log_message "INFO" "Reference Pop (pop1): ${POP1_REF}, All Pop IDs for pairs: ${POP_IDS_ARRAY[*]}"
 log_message "INFO" "Input XPEHH files from: ${HAPBIN_DIR} (prefix: sel)"
 log_message "INFO" "Bin files from: ${BIN_DIR}"
@@ -62,11 +113,10 @@ log_message "INFO" "Output to: ${NORM_OUTPUT_DIR}"
 
 if [ ! -f "${CONFIG_FILE}" ]; then log_message "ERROR" "Config file '${CONFIG_FILE}' NOT FOUND."; exit 1; fi
 mkdir -p "${NORM_OUTPUT_DIR}"
-mkdir -p "${RUNTIME_DIR}" # Should exist
+mkdir -p "${RUNTIME_DIR}"
 
 INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
 if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then log_message "ERROR" "Input CSV for sim_ids '${INPUT_CSV_FILE_HOST}' not found."; exit 1; fi
-# xpehh.sel.map_hap_gen.runtime.csv format: sim_id,<sim_id_val>,sel_map_hap_gen_runtime,all_pops,...
 numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
 if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV '${INPUT_CSV_FILE_HOST}' has no numeric sim_ids in 2nd col."; fi
 
@@ -80,52 +130,20 @@ done
 XPEHH_PAIR_IDS_STR_ARG=$(IFS=,; echo "${XPEHH_PAIR_IDS_LIST[*]}")
 if [ -z "${XPEHH_PAIR_IDS_STR_ARG}" ]; then
     log_message "WARNING" "No XPEHH pairs to process based on POP1_REF and POP_IDS_ARRAY. Check config."
-    # Script will still run but Python might not do much.
 fi
 
+# --- Main Logic ---
 
-if ! docker image inspect "$DOCKER_IMAGE_PYXPEHH" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYXPEHH} not found. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_PYXPEHH"; then log_message "ERROR" "Failed to pull ${DOCKER_IMAGE_PYXPEHH}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYXPEHH} already exists."
-fi
-log_message "INFO" "Starting Docker container for normalizing XPEHH and finding max..."
-
-# --- Docker Execution ---
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_XPEHH_PAIR_IDS_STR_ARG="${XPEHH_PAIR_IDS_STR_ARG}" \
-    -e CONTAINER_HAPBIN_DIR="${HAPBIN_DIR}" \
-    -e CONTAINER_BIN_DIR="${BIN_DIR}" \
-    -e CONTAINER_NORM_OUTPUT_DIR="${NORM_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_BASENAME="${INPUT_CSV_BASENAME}" \
-    -e PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME="${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_PYXPEHH" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
-
-cleanup_and_exit() {
-    log_container "Caught signal! Cleaning up temporary Python script..."
-    rm -f "./${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
-    log_container "Exiting due to signal."
-    exit 130
+# Cleanup function to remove the temporary python script
+cleanup() {
+    log_message "INFO" "Cleaning up temporary Python script..."
+    rm -f "${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
 }
-trap cleanup_and_exit INT TERM
-log_container "----------------------------------------------------"
-log_container "Container Script (Normalize XPEHH & Max) Started: $(date)"
-log_container "----------------------------------------------------"
-# (Echo received ENV VARS - condensed)
-log_container "Received XPEHH_PAIR_IDS_STR_ARG: [${CONTAINER_XPEHH_PAIR_IDS_STR_ARG}]"
+trap cleanup INT TERM EXIT
 
-
-# Create the Python helper script inside the container
-cat > "./${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
+# Create the Python helper script in the current directory
+log_message "INFO" "Creating Python helper script: ${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
+cat > "${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
 import sys
 import os
 import pandas as pd
@@ -272,8 +290,8 @@ def calculate_max_xpehh(sim_id, norm_output_dir_temp):
     return True
 
 if __name__ == "__main__":
-    if len(sys.argv) != 7:
-        print("Usage: python <script_name>.py <sim_id> <comma_sep_pair_ids> <hapbin_dir> <bin_dir> <norm_output_dir> <runtime_dir>")
+    if len(sys.argv) != 6:
+        print("Usage: python <script_name>.py <sim_id> <comma_sep_pair_ids> <hapbin_dir> <bin_dir> <norm_output_dir>")
         sys.exit(1)
     
     sim_id_arg = sys.argv[1]
@@ -281,10 +299,13 @@ if __name__ == "__main__":
     hapbin_dir_arg = sys.argv[3]
     bin_dir_arg = sys.argv[4]
     norm_output_dir_arg = sys.argv[5]
-    # runtime_dir_arg = sys.argv[6] # For logging runtime, Bash handles this
 
-    all_pair_ids = [p.strip() for p in pair_ids_comma_sep_arg.split(',')]
+    all_pair_ids = [p.strip() for p in pair_ids_comma_sep_arg.split(',') if p.strip()]
     
+    if not all_pair_ids:
+        print("Python: No valid pair IDs provided. Exiting.")
+        sys.exit(0) # Not an error, just nothing to do.
+
     overall_success = True
 
     # Step 1: Normalize XPEHH for each pair
@@ -303,66 +324,47 @@ if __name__ == "__main__":
     else:
         sys.exit(1)
 PYTHON_SCRIPT_EOF
-chmod +x "./${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
-log_container "Python XPEHH Normalize & Max script created."
+chmod +x "${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
 
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_BASENAME}"
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then
-    log_container "CRITICAL ERROR: Input CSV '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."
-    exit 1
-fi
-
-log_container "Reading all sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for XPEHH normalization and max calculation..."
-# xpehh.sel.map_hap_gen.runtime.csv format: sim_id,<sim_id_val>,sel_map_hap_gen_runtime,all_pops,...
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+# Read sim_ids and start processing
+log_message "INFO" "Reading all sim_ids from ${INPUT_CSV_FILE_HOST} for XPEHH normalization and max calculation..."
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_HOST}" | sort -un)
 
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    log_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER}. Nothing to process."
+    log_message "WARNING" "No valid sim_ids found in ${INPUT_CSV_FILE_HOST}. Nothing to process."
+elif [ -z "${XPEHH_PAIR_IDS_STR_ARG}" ]; then
+    log_message "WARNING" "No XPEHH pairs were defined to process. Skipping all simulations."
 else
-    log_container "Found unique sim_ids for XPEHH Norm & Max: ${sim_ids_to_run[*]}"
+    log_message "INFO" "Found unique sim_ids for XPEHH Norm & Max: ${sim_ids_to_run[*]}"
     for current_sim_id in "${sim_ids_to_run[@]}"; do
-        log_container "--- Processing XPEHH Norm & Max for sim_id: ${current_sim_id} ---"
+        log_message "INFO" "--- Processing XPEHH Norm & Max for sim_id: ${current_sim_id} ---"
         
         overall_sim_start_time=$(date +%s)
         
         python3 "./${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}" \
             "${current_sim_id}" \
-            "${CONTAINER_XPEHH_PAIR_IDS_STR_ARG}" \
-            "./${CONTAINER_HAPBIN_DIR}" \
-            "./${CONTAINER_BIN_DIR}" \
-            "./${CONTAINER_NORM_OUTPUT_DIR}" \
-            "./${CONTAINER_RUNTIME_DIR}" # Pass runtime_dir for consistency if Python needs it later
+            "${XPEHH_PAIR_IDS_STR_ARG}" \
+            "${HAPBIN_DIR}" \
+            "${BIN_DIR}" \
+            "${NORM_OUTPUT_DIR}"
         
         python_exit_status=$?
         overall_sim_end_time=$(date +%s)
         overall_sim_runtime=$((overall_sim_end_time - overall_sim_start_time))
 
         if [ $python_exit_status -eq 0 ]; then
-            log_container "Python script for XPEHH Norm & Max completed successfully for sim_id ${current_sim_id}. Runtime: ${overall_sim_runtime}s"
-            echo "sim_id,${current_sim_id},xpehh_norm_max_runtime,${overall_sim_runtime},seconds,status,success" >> "./${CONTAINER_RUNTIME_DIR}/xpehh_norm_max.sel.runtime.csv"
+            log_message "INFO" "Python script for XPEHH Norm & Max completed successfully for sim_id ${current_sim_id}. Runtime: ${overall_sim_runtime}s"
+            echo "sim_id,${current_sim_id},xpehh_norm_max_runtime,${overall_sim_runtime},seconds,status,success" >> "${RUNTIME_DIR}/xpehh_norm_max.sel.runtime.csv"
         else
-            log_container "ERROR: Python script for XPEHH Norm & Max FAILED for sim_id ${current_sim_id} with exit status ${python_exit_status}."
-            echo "sim_id,${current_sim_id},xpehh_norm_max_runtime,${overall_sim_runtime},seconds,status,failed_python_exit_${python_exit_status}" >> "./${CONTAINER_RUNTIME_DIR}/xpehh_norm_max.sel.runtime.csv"
+            log_message "ERROR" "Python script for XPEHH Norm & Max FAILED for sim_id ${current_sim_id} with exit status ${python_exit_status}."
+            echo "sim_id,${current_sim_id},xpehh_norm_max_runtime,${overall_sim_runtime},seconds,status,failed_python_exit_${python_exit_status}" >> "${RUNTIME_DIR}/xpehh_norm_max.sel.runtime.csv"
         fi
-        log_container "--- Finished XPEHH Norm & Max for sim_id: ${current_sim_id} ---"
+        log_message "INFO" "--- Finished XPEHH Norm & Max for sim_id: ${current_sim_id} ---"
     done
-    log_container "All sim_ids from CSV processed for XPEHH Norm & Max."
+    log_message "INFO" "All sim_ids from CSV processed for XPEHH Norm & Max."
 fi
 
-rm -f "./${PYTHON_XPEHH_NORM_MAX_SCRIPT_NAME}"
-log_container "Python helper script removed."
-
-log_container "XPEHH Normalization and Max calculation finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (Normalize XPEHH & Max) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
-
-# --- Host Post-run ---
-docker_exit_status=$?
-log_message "INFO" "Docker container (Normalize XPEHH & Max) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then log_message "INFO" "Script (Normalize XPEHH & Max) likely interrupted."; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then log_message "ERROR" "Docker container (Normalize XPEHH & Max) reported an error."; fi
+log_message "INFO" "XPEHH Normalization and Max calculation finished."
 log_message "INFO" "----------------------------------------------------"
 log_message "INFO" "Host Script (10_normalize_xpehh_max.sh) Finished: $(date)"
 log_message "INFO" "----------------------------------------------------"

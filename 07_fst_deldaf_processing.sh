@@ -1,23 +1,34 @@
 #!/bin/bash
 
-# This script computes FST and ΔDAF for SELECTION simulations using Python.
+# This script computes FST and ΔDAF for SELECTION simulations using a local Python script.
+# This version runs all commands directly on the host system without Docker.
 
 # --- Python Helper Script Name ---
 PYTHON_FST_DELDAF_SCRIPT_NAME="compute_fst_deldaf_core.py"
 
 # --- Log Configuration ---
 LOG_DIR="logs"
-LOG_FILE="${LOG_DIR}/fst_deldaf_processing_sel_py.log" # Indicate Python version in log
+LOG_FILE="${LOG_DIR}/fst_deldaf_processing_sel_py.log"
 
 mkdir -p "${LOG_DIR}"
 exec &> >(tee -a "${LOG_FILE}")
 
-# --- Helper Functions (for host script) ---
+# --- Helper Functions ---
 log_message() {
     local type="$1"
     local message="$2"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${type}] - ${message}"
 }
+
+# --- Initial Setup ---
+log_message "INFO" "Host Script (07_fst_deldaf_processing.sh for SELECTION with Python) Started: $(date)"
+
+# --- Local Dependency Check ---
+if ! command -v python3 &> /dev/null; then
+    log_message "ERROR" "'python3' command not found. Python 3 is required for this script."
+    exit 1
+fi
+log_message "INFO" "Local dependency 'python3' found."
 
 # --- Host Configuration ---
 CONFIG_FILE="00config.json"
@@ -46,14 +57,13 @@ INPUT_CSV_BASENAME="nsl.sel.runtime.csv"
 PATH_PREFIX_FOR_FILES="sel"
 OUTPUT_STATS_DIR="two_pop_stats" 
 RUNTIME_DIR="runtime"
-DOCKER_IMAGE_PY="docker.io/tx56/deepsweep_simulator:latest" # Assumed to have Python
 HOST_CWD=$(pwd)
 
-log_message "INFO" "Host Script (07_fst_deldaf_processing.sh for SELECTION with Python) Started: $(date)"
 log_message "INFO" "Reading configuration from ${CONFIG_FILE}"
 log_message "INFO" "Reference Pop (pop1): ${POP1_REF}, All Pop IDs: ${POP_IDS_ARRAY[*]}"
 log_message "INFO" "TPED Input Dir: ${TPED_INPUT_DIR}, Output Stats Dir: ${OUTPUT_STATS_DIR}"
 
+# --- Pre-run Checks ---
 if [ ! -f "${CONFIG_FILE}" ]; then log_message "ERROR" "Config file '${CONFIG_FILE}' NOT FOUND."; exit 1; fi
 mkdir -p "${OUTPUT_STATS_DIR}"; mkdir -p "${RUNTIME_DIR}"
 INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
@@ -61,46 +71,19 @@ if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then log_message "ERROR" "Input CSV '${INP
 numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
 if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV '${INPUT_CSV_FILE_HOST}' has no numeric sim_ids."; fi
 
-if ! docker image inspect "$DOCKER_IMAGE_PY" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PY} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_PY"; then log_message "ERROR" "Failed to pull Docker image ${DOCKER_IMAGE_PY}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PY} already exists locally."
-fi
-log_message "INFO" "Starting Docker container for FST/DelDAF processing (SELECTION with Python)..."
+# --- Main Logic ---
 
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_REF="${POP1_REF}" \
-    -e CONTAINER_POP_IDS_STR="${POP_IDS_ARRAY[*]}" \
-    -e CONTAINER_PATH_PREFIX="${PATH_PREFIX_FOR_FILES}" \
-    -e CONTAINER_TPED_INPUT_DIR="${TPED_INPUT_DIR}" \
-    -e CONTAINER_OUTPUT_STATS_DIR="${OUTPUT_STATS_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_BASENAME="${INPUT_CSV_BASENAME}" \
-    -e PYTHON_FST_DELDAF_SCRIPT_NAME="${PYTHON_FST_DELDAF_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_PY" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
-
+# Cleanup function to remove the temporary python script on exit
 cleanup_and_exit() {
-    log_container "Caught signal! Cleaning up temporary Python script..."
-    rm -f "./${PYTHON_FST_DELDAF_SCRIPT_NAME}"
-    log_container "Exiting due to signal."
-    exit 130
+    log_message "INFO" "Caught signal or script ending. Cleaning up temporary Python script..."
+    rm -f "${PYTHON_FST_DELDAF_SCRIPT_NAME}"
+    log_message "INFO" "Exiting."
 }
-trap cleanup_and_exit INT TERM
-log_container "----------------------------------------------------"
-log_container "Container Script (FST/DelDAF with Python for ${CONTAINER_PATH_PREFIX}) Started: $(date)"
-log_container "----------------------------------------------------"
-read -r -a CONTAINER_POP_IDS_ARRAY_INTERNAL <<< "${CONTAINER_POP_IDS_STR}"
+trap cleanup_and_exit INT TERM EXIT
 
-# Create the Python helper script inside the container
-cat > "./${PYTHON_FST_DELDAF_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
+# Create the Python helper script in the current directory
+log_message "INFO" "Creating Python helper script: ${PYTHON_FST_DELDAF_SCRIPT_NAME}"
+cat > "${PYTHON_FST_DELDAF_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
 import sys
 import os
 import math # For isnan
@@ -304,65 +287,45 @@ if __name__ == "__main__":
     else:
         sys.exit(1)
 PYTHON_SCRIPT_EOF
-chmod +x "./${PYTHON_FST_DELDAF_SCRIPT_NAME}"
-log_container "Python FST/DelDAF script created."
+chmod +x "${PYTHON_FST_DELDAF_SCRIPT_NAME}"
 
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_BASENAME}"
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then
-    log_container "CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."
-    exit 1
-fi
-
-log_container "Reading all sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for FST/DelDAF processing..."
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+# Read sim_ids and process them
+log_message "INFO" "Reading all sim_ids from ${INPUT_CSV_FILE_HOST} for FST/DelDAF processing..."
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_HOST}" | sort -un)
 
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    log_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER}. Nothing to process."
+    log_message "INFO" "No valid sim_ids found in ${INPUT_CSV_FILE_HOST}. Nothing to process."
 else
-    log_container "Found unique sim_ids for FST/DelDAF: ${sim_ids_to_run[*]}"
+    log_message "INFO" "Found unique sim_ids for FST/DelDAF: ${sim_ids_to_run[*]}"
     for current_sim_id in "${sim_ids_to_run[@]}"; do
-        log_container "--- Starting FST/DelDAF processing for sim_id: ${current_sim_id} ---"
+        log_message "INFO" "--- Starting FST/DelDAF processing for sim_id: ${current_sim_id} ---"
         
         fst_deldaf_start_time=$(date +%s)
         
         python3 "./${PYTHON_FST_DELDAF_SCRIPT_NAME}" \
             "${current_sim_id}" \
-            "${CONTAINER_POP1_REF}" \
-            "${CONTAINER_POP_IDS_STR}" \
-            "${CONTAINER_PATH_PREFIX}" \
-            "./${CONTAINER_TPED_INPUT_DIR}" \
-            "./${CONTAINER_OUTPUT_STATS_DIR}"
+            "${POP1_REF}" \
+            "${POP_IDS_ARRAY[*]}" \
+            "${PATH_PREFIX_FOR_FILES}" \
+            "${TPED_INPUT_DIR}" \
+            "${OUTPUT_STATS_DIR}"
         
         python_exit_status=$?
         fst_deldaf_end_time=$(date +%s)
         fst_deldaf_runtime=$((fst_deldaf_end_time - fst_deldaf_start_time))
 
         if [ $python_exit_status -eq 0 ]; then
-            log_container "Python script for FST/DelDAF completed successfully for sim_id ${current_sim_id}. Runtime: ${fst_deldaf_runtime}s"
-            echo "sim_id,${current_sim_id},pop1_ref,${CONTAINER_POP1_REF},fst_deldaf_py_runtime,${fst_deldaf_runtime},seconds,status,success" >> "./${CONTAINER_RUNTIME_DIR}/fst_deldaf.${CONTAINER_PATH_PREFIX}.runtime.csv"
+            log_message "INFO" "Python script for FST/DelDAF completed successfully for sim_id ${current_sim_id}. Runtime: ${fst_deldaf_runtime}s"
+            echo "sim_id,${current_sim_id},pop1_ref,${POP1_REF},fst_deldaf_py_runtime,${fst_deldaf_runtime},seconds,status,success" >> "${RUNTIME_DIR}/fst_deldaf.${PATH_PREFIX_FOR_FILES}.runtime.csv"
         else
-            log_container "ERROR: Python script for FST/DelDAF FAILED for sim_id ${current_sim_id} with exit status ${python_exit_status}."
-            echo "sim_id,${current_sim_id},pop1_ref,${CONTAINER_POP1_REF},fst_deldaf_py_runtime,${fst_deldaf_runtime},seconds,status,failed_python_exit_${python_exit_status}" >> "./${CONTAINER_RUNTIME_DIR}/fst_deldaf.${CONTAINER_PATH_PREFIX}.runtime.csv"
+            log_message "ERROR" "Python script for FST/DelDAF FAILED for sim_id ${current_sim_id} with exit status ${python_exit_status}."
+            echo "sim_id,${current_sim_id},pop1_ref,${POP1_REF},fst_deldaf_py_runtime,${fst_deldaf_runtime},seconds,status,failed_python_exit_${python_exit_status}" >> "${RUNTIME_DIR}/fst_deldaf.${PATH_PREFIX_FOR_FILES}.runtime.csv"
         fi
-        log_container "--- Finished FST/DelDAF processing for sim_id: ${current_sim_id} ---"
+        log_message "INFO" "--- Finished FST/DelDAF processing for sim_id: ${current_sim_id} ---"
     done
-    log_container "All sim_ids from CSV processed for FST/DelDAF."
+    log_message "INFO" "All sim_ids from CSV processed for FST/DelDAF."
 fi
 
-rm -f "./${PYTHON_FST_DELDAF_SCRIPT_NAME}"
-log_container "Python FST/DelDAF helper script removed."
-
-log_container "FST/DelDAF processing for ${CONTAINER_PATH_PREFIX} simulations finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (FST/DelDAF with Python for ${CONTAINER_PATH_PREFIX}) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
-
-# --- Host Post-run ---
-docker_exit_status=$?
-log_message "INFO" "Docker container (FST/DelDAF for SELECTION with Python) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then log_message "INFO" "Script (FST/DelDAF for SELECTION with Python) likely interrupted."; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then log_message "ERROR" "Docker container (FST/DelDAF for SELECTION with Python) reported an error."; fi
 log_message "INFO" "----------------------------------------------------"
 log_message "INFO" "Host Script (07_fst_deldaf_processing.sh for SELECTION with Python) Finished: $(date)"
 log_message "INFO" "----------------------------------------------------"

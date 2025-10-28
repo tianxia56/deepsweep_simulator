@@ -87,7 +87,6 @@ else
 fi
 HAPBIN_OUTPUT_DIR="hapbin" 
 RUNTIME_DIR="runtime"
-DOCKER_IMAGE_XPEHH="docker.io/tx56/deepsweep_simulator:latest" 
 HOST_CWD=$(pwd)
 
 log_message "INFO" "Host Script (05_xpehh_processing.sh for ${SIM_TYPE}) Started: $(date)"
@@ -105,46 +104,16 @@ INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
 if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then log_message "ERROR" "Input CSV file '${INPUT_CSV_FILE_HOST}' not found."; exit 1; fi
 numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
 if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV file '${INPUT_CSV_FILE_HOST}' has no numeric sim_ids in 2nd col."; fi
-if ! docker image inspect "$DOCKER_IMAGE_XPEHH" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_XPEHH} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_XPEHH"; then log_message "ERROR" "Failed to pull Docker image ${DOCKER_IMAGE_XPEHH}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_XPEHH} already exists locally."
+
+# Check for local xpehhbin executable
+if ! command -v xpehhbin &> /dev/null; then
+    log_message "CRITICAL_ERROR" "'xpehhbin' command not found. Please install xpehhbin and ensure it's in your PATH. Exiting."
+    exit 1
 fi
-log_message "INFO" "Starting Docker container for XPEHH processing (${SIM_TYPE})..."
+log_message "INFO" "Local 'xpehhbin' executable found."
+log_message "INFO" "Starting local XPEHH processing (${SIM_TYPE})..."
 
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_TARGET="${POP1_TARGET}" \
-    -e CONTAINER_POP_IDS_STR="${POP_IDS_ARRAY[*]}" \
-    -e CONTAINER_MAX_POP_ID="${MAX_POP_ID}" \
-    -e CONTAINER_PATH_PREFIX="${PATH_PREFIX_FOR_FILES}" \
-    -e CONTAINER_INPUT_SIM_DIR="${INPUT_SIM_DIR}" \
-    -e CONTAINER_HAPBIN_OUTPUT_DIR="${HAPBIN_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_BASENAME="${INPUT_CSV_BASENAME}" \
-    -e PYTHON_PREPROCESS_SCRIPT_NAME="${PYTHON_PREPROCESS_SCRIPT_NAME}" \
-    -e PYTHON_POSTPROCESS_SCRIPT_NAME="${PYTHON_POSTPROCESS_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_XPEHH" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
-cleanup_and_exit() {
-    log_container "Caught signal! Cleaning up temporary Python scripts..."
-    rm -f "./${PYTHON_PREPROCESS_SCRIPT_NAME}" "./${PYTHON_POSTPROCESS_SCRIPT_NAME}"
-    log_container "Exiting due to signal."
-    exit 130
-}
-trap cleanup_and_exit INT TERM
-log_container "----------------------------------------------------"
-log_container "Container Script (XPEHH Processing for ${CONTAINER_PATH_PREFIX}) Started: $(date)"
-log_container "----------------------------------------------------"
-read -r -a CONTAINER_POP_IDS_ARRAY <<< "${CONTAINER_POP_IDS_STR}"
-
-# --- Python Preprocessing Script ---
+# --- Create Python Preprocessing Script ---
 cat > "./${PYTHON_PREPROCESS_SCRIPT_NAME}" <<'PYTHON_PRE_EOF'
 import sys
 import os
@@ -211,7 +180,7 @@ if __name__ == "__main__":
     else: sys.exit(1)
 PYTHON_PRE_EOF
 chmod +x "./${PYTHON_PREPROCESS_SCRIPT_NAME}"
-log_container "Python Preprocessing script created."
+log_message "INFO" "Python Preprocessing script created."
 
 # --- Python Postprocessing Script (with dtype fix for merge) ---
 cat > "./${PYTHON_POSTPROCESS_SCRIPT_NAME}" <<'PYTHON_POST_EOF'
@@ -314,70 +283,75 @@ if __name__ == "__main__":
     else: sys.exit(1)
 PYTHON_POST_EOF
 chmod +x "./${PYTHON_POSTPROCESS_SCRIPT_NAME}"
-log_container "Python Postprocessing script created."
+log_message "INFO" "Python Postprocessing script created."
 
-# (Rest of the container's main XPEHH processing loop remains the same)
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_BASENAME}"
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then log_container "CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."; exit 1; fi
-log_container "Reading sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for XPEHH processing..."
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+# --- Main XPEHH Processing (Local) ---
+INPUT_CSV_FILE_LOCAL="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
+if [ ! -f "${INPUT_CSV_FILE_LOCAL}" ]; then log_message "CRITICAL_ERROR" "Input CSV file '${INPUT_CSV_FILE_LOCAL}' not found. Exiting."; exit 1; fi
+log_message "INFO" "Reading sim_ids from ${INPUT_CSV_FILE_LOCAL} for XPEHH processing..."
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_LOCAL}" | sort -un)
+
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    log_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER}. Nothing to process."
+    log_message "WARNING" "No valid sim_ids found in ${INPUT_CSV_FILE_LOCAL}. Nothing to process."
 else
-    log_container "Found unique sim_ids for XPEHH: ${sim_ids_to_run[*]}"
+    log_message "INFO" "Found unique sim_ids for XPEHH: ${sim_ids_to_run[*]}"
     for current_sim_id in "${sim_ids_to_run[@]}"; do
-        log_container "--- Starting XPEHH pipeline for sim_id: ${current_sim_id} ---"
-        log_container "Step 1: Generating .map and .hap files for sim_id ${current_sim_id}..."
+        log_message "INFO" "--- Starting XPEHH pipeline for sim_id: ${current_sim_id} ---"
+        log_message "INFO" "Step 1: Generating .map and .hap files for sim_id ${current_sim_id}..."
         map_hap_overall_start_time=$(date +%s)
         all_pops_preprocessed_successfully=true
-        for pop_id_iter in "${CONTAINER_POP_IDS_ARRAY[@]}"; do
-            log_container "Preprocessing TPED for sim ${current_sim_id}, pop ${pop_id_iter}..."
-            python "./${PYTHON_PREPROCESS_SCRIPT_NAME}" "${current_sim_id}" "${pop_id_iter}" "${CONTAINER_POP1_TARGET}" "${CONTAINER_PATH_PREFIX}" "./${CONTAINER_INPUT_SIM_DIR}" "./${CONTAINER_HAPBIN_OUTPUT_DIR}"
-            if [ $? -ne 0 ]; then log_container "ERROR: Python preprocessing failed for sim ${current_sim_id}, pop ${pop_id_iter}."; all_pops_preprocessed_successfully=false; fi
+        for pop_id_iter in "${POP_IDS_ARRAY[@]}"; do
+            log_message "INFO" "Preprocessing TPED for sim ${current_sim_id}, pop ${pop_id_iter}..."
+            python "./${PYTHON_PREPROCESS_SCRIPT_NAME}" "${current_sim_id}" "${pop_id_iter}" "${POP1_TARGET}" "${PATH_PREFIX_FOR_FILES}" "./${INPUT_SIM_DIR}" "./${HAPBIN_OUTPUT_DIR}"
+            if [ $? -ne 0 ]; then log_message "ERROR" "Python preprocessing failed for sim ${current_sim_id}, pop ${pop_id_iter}."; all_pops_preprocessed_successfully=false; fi
         done
         map_hap_overall_end_time=$(date +%s); map_hap_overall_runtime=$((map_hap_overall_end_time - map_hap_overall_start_time))
-        echo "sim_id,${current_sim_id},${CONTAINER_PATH_PREFIX}_map_hap_gen_runtime,all_pops,${map_hap_overall_runtime},seconds" >> "./${CONTAINER_RUNTIME_DIR}/xpehh.${CONTAINER_PATH_PREFIX}.map_hap_gen.runtime.csv"
-        if ! ${all_pops_preprocessed_successfully}; then log_container "ERROR: Not all populations preprocessed for sim ${current_sim_id}. Skipping xpehhbin and DAF."; continue; fi
-        log_container "Step 1 completed for sim_id ${current_sim_id}."
-        log_container "Step 2: Running xpehhbin for sim_id ${current_sim_id} (pop ${CONTAINER_POP1_TARGET} vs others)..."
-        for pop2_iter in "${CONTAINER_POP_IDS_ARRAY[@]}"; do
-            if [ "${pop2_iter}" -eq "${CONTAINER_POP1_TARGET}" ]; then continue; fi
-            hapA_file="./${CONTAINER_HAPBIN_OUTPUT_DIR}/${CONTAINER_PATH_PREFIX}.${current_sim_id}_0_${CONTAINER_POP1_TARGET}.hap"
-            hapB_file="./${CONTAINER_HAPBIN_OUTPUT_DIR}/${CONTAINER_PATH_PREFIX}.${current_sim_id}_0_${pop2_iter}.hap"
-            map_file_xpehh="./${CONTAINER_HAPBIN_OUTPUT_DIR}/${CONTAINER_PATH_PREFIX}.${current_sim_id}_0_${CONTAINER_POP1_TARGET}.map" 
-            xpehh_output_file="./${CONTAINER_HAPBIN_OUTPUT_DIR}/${CONTAINER_PATH_PREFIX}.${current_sim_id}_${CONTAINER_POP1_TARGET}_vs_${pop2_iter}.xpehh.out"
-            if [ ! -f "${hapA_file}" ]; then log_container "ERROR: hapA file ${hapA_file} not found!"; continue; fi
-            if [ ! -f "${hapB_file}" ]; then log_container "ERROR: hapB file ${hapB_file} not found!"; continue; fi
-            if [ ! -f "${map_file_xpehh}" ]; then log_container "ERROR: map file ${map_file_xpehh} not found!"; continue; fi
-            xpehh_cmd="xpehhbin --hapA ${hapA_file} --hapB ${hapB_file} --map ${map_file_xpehh} --out ${xpehh_output_file}"
-            log_container "Executing: ${xpehh_cmd}"; xpehh_start_time=$(date +%s); ${xpehh_cmd}; xpehh_exit_status=$?; xpehh_end_time=$(date +%s); xpehh_runtime=$((xpehh_end_time - xpehh_start_time))
-            if [ $xpehh_exit_status -eq 0 ] && [ -f "${xpehh_output_file}" ]; then
-                log_container "xpehhbin for pop ${CONTAINER_POP1_TARGET} vs ${pop2_iter} completed. Runtime: ${xpehh_runtime}s"
-                echo "sim_id,${current_sim_id},${CONTAINER_PATH_PREFIX}_xpehh_runtime,${CONTAINER_POP1_TARGET}vs${pop2_iter},${xpehh_runtime},seconds" >> "./${CONTAINER_RUNTIME_DIR}/xpehh.${CONTAINER_PATH_PREFIX}.pairwise.runtime.csv"
-            else log_container "ERROR: xpehhbin failed for pop ${CONTAINER_POP1_TARGET} vs ${pop2_iter} (exit status ${xpehh_exit_status})."; fi
-        done
-        log_container "Step 2 completed for sim_id ${current_sim_id}."
-        log_container "Step 3: Adding DAF/pos to XPEHH outputs for sim_id ${current_sim_id}..."
-        python "./${PYTHON_POSTPROCESS_SCRIPT_NAME}" "${current_sim_id}" "${CONTAINER_POP1_TARGET}" "${CONTAINER_MAX_POP_ID}" "${CONTAINER_PATH_PREFIX}" "./${CONTAINER_HAPBIN_OUTPUT_DIR}" "./${CONTAINER_INPUT_SIM_DIR}"
-        if [ $? -ne 0 ]; then log_container "ERROR: Python postprocessing (add DAF/pos) failed for sim ${current_sim_id}."; else log_container "DAF/pos addition completed for sim ${current_sim_id}."; fi
-        log_container "Step 3 completed for sim_id ${current_sim_id}."
-        log_container "--- Finished XPEHH pipeline for sim_id: ${current_sim_id} ---"
-    done
-    log_container "All sim_ids from CSV processed by XPEHH pipeline."
-fi
-rm -f "./${PYTHON_PREPROCESS_SCRIPT_NAME}" "./${PYTHON_POSTPROCESS_SCRIPT_NAME}"
-log_container "Python helper scripts removed."
-log_container "XPEHH processing for ${CONTAINER_PATH_PREFIX} simulations finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (XPEHH Processing for ${CONTAINER_PATH_PREFIX}) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
+        echo "sim_id,${current_sim_id},${PATH_PREFIX_FOR_FILES}_map_hap_gen_runtime,all_pops,${map_hap_overall_runtime},seconds" >> "./${RUNTIME_DIR}/xpehh.${PATH_PREFIX_FOR_FILES}.map_hap_gen.runtime.csv"
+        if ! ${all_pops_preprocessed_successfully}; then log_message "ERROR" "Not all populations preprocessed for sim ${current_sim_id}. Skipping xpehhbin and DAF."; continue; fi
+        log_message "INFO" "Step 1 completed for sim_id ${current_sim_id}."
 
-# --- Host Post-run ---
-docker_exit_status=$?
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] - Docker container (XPEHH for ${SIM_TYPE}) finished with exit status: ${docker_exit_status}." | tee -a "${LOG_FILE}"
-if [ ${docker_exit_status} -eq 130 ]; then echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] - Script (XPEHH for ${SIM_TYPE}) likely interrupted by user (Ctrl+C)." | tee -a "${LOG_FILE}"; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] - Docker container (XPEHH for ${SIM_TYPE}) reported an error." | tee -a "${LOG_FILE}"; fi
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] - ----------------------------------------------------" | tee -a "${LOG_FILE}"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] - Host Script (05_xpehh_processing.sh for ${SIM_TYPE}) Finished: $(date)" | tee -a "${LOG_FILE}"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] - ----------------------------------------------------" | tee -a "${LOG_FILE}"
+        log_message "INFO" "Step 2: Running xpehhbin for sim_id ${current_sim_id} (pop ${POP1_TARGET} vs others)..."
+        for pop2_iter in "${POP_IDS_ARRAY[@]}"; do
+            if [ "${pop2_iter}" -eq "${POP1_TARGET}" ]; then continue; fi
+            hapA_file="./${HAPBIN_OUTPUT_DIR}/${PATH_PREFIX_FOR_FILES}.${current_sim_id}_0_${POP1_TARGET}.hap"
+            hapB_file="./${HAPBIN_OUTPUT_DIR}/${PATH_PREFIX_FOR_FILES}.${current_sim_id}_0_${pop2_iter}.hap"
+            map_file_xpehh="./${HAPBIN_OUTPUT_DIR}/${PATH_PREFIX_FOR_FILES}.${current_sim_id}_0_${POP1_TARGET}.map" 
+            xpehh_output_file="./${HAPBIN_OUTPUT_DIR}/${PATH_PREFIX_FOR_FILES}.${current_sim_id}_${POP1_TARGET}_vs_${pop2_iter}.xpehh.out"
+            
+            if [ ! -f "${hapA_file}" ]; then log_message "ERROR" "hapA file ${hapA_file} not found!"; continue; fi
+            if [ ! -f "${hapB_file}" ]; then log_message "ERROR" "hapB file ${hapB_file} not found!"; continue; fi
+            if [ ! -f "${map_file_xpehh}" ]; then log_message "ERROR" "map file ${map_file_xpehh} not found!"; continue; fi
+
+            xpehh_cmd="xpehhbin --hapA ${hapA_file} --hapB ${hapB_file} --map ${map_file_xpehh} --out ${xpehh_output_file}"
+            log_message "INFO" "Executing: ${xpehh_cmd}"; 
+            xpehh_start_time=$(date +%s); 
+            ${xpehh_cmd}
+            xpehh_exit_status=$?; 
+            xpehh_end_time=$(date +%s); 
+            xpehh_runtime=$((xpehh_end_time - xpehh_start_time))
+            if [ $xpehh_exit_status -eq 0 ] && [ -f "${xpehh_output_file}" ]; then
+                log_message "INFO" "xpehhbin for pop ${POP1_TARGET} vs ${pop2_iter} completed. Runtime: ${xpehh_runtime}s"
+                echo "sim_id,${current_sim_id},${PATH_PREFIX_FOR_FILES}_xpehh_runtime,${POP1_TARGET}vs${pop2_iter},${xpehh_runtime},seconds" >> "./${RUNTIME_DIR}/xpehh.${PATH_PREFIX_FOR_FILES}.pairwise.runtime.csv"
+            else 
+                log_message "ERROR" "xpehhbin failed for pop ${POP1_TARGET} vs ${pop2_iter} (exit status ${xpehh_exit_status})."; 
+            fi
+        done
+        log_message "INFO" "Step 2 completed for sim_id ${current_sim_id}."
+
+        log_message "INFO" "Step 3: Adding DAF/pos to XPEHH outputs for sim_id ${current_sim_id}..."
+        python "./${PYTHON_POSTPROCESS_SCRIPT_NAME}" "${current_sim_id}" "${POP1_TARGET}" "${MAX_POP_ID}" "${PATH_PREFIX_FOR_FILES}" "./${HAPBIN_OUTPUT_DIR}" "./${INPUT_SIM_DIR}"
+        if [ $? -ne 0 ]; then log_message "ERROR" "Python postprocessing (add DAF/pos) failed for sim ${current_sim_id}."; else log_message "INFO" "DAF/pos addition completed for sim ${current_sim_id}."; fi
+        log_message "INFO" "Step 3 completed for sim_id ${current_sim_id}."
+        log_message "INFO" "--- Finished XPEHH pipeline for sim_id: ${current_sim_id} ---"
+    done
+    log_message "INFO" "All sim_ids from CSV processed by XPEHH pipeline."
+fi
+
+rm -f "./${PYTHON_PREPROCESS_SCRIPT_NAME}" "./${PYTHON_POSTPROCESS_SCRIPT_NAME}"
+log_message "INFO" "Python helper scripts removed."
+
+log_message "INFO" "XPEHH processing for ${SIM_TYPE} simulations finished."
+log_message "INFO" "----------------------------------------------------"
+log_message "INFO" "Host Script (05_xpehh_processing.sh for ${SIM_TYPE}) Finished: $(date)"
+log_message "INFO" "----------------------------------------------------"
+exit 0

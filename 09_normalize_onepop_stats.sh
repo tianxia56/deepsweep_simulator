@@ -1,7 +1,42 @@
 #!/bin/bash
 
+# --- Bulletproof Bash and Conda Activation ---
+# 1. Ensure the script is running with Bash, not sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    # Re-execute the script with the same arguments using bash.
+    echo "Re-executing with /bin/bash..." >&2
+    exec /bin/bash "$0" "$@"
+fi
+
+# 2. Manually find and activate the Conda environment by manipulating the PATH.
+# This is more reliable in non-interactive scripts than 'conda activate'.
+ENV_NAME="deepsweep_simulator"
+echo "Attempting to set PATH for Conda environment: ${ENV_NAME}"
+
+# Find the full path to the Conda environment
+CONDA_ENV_PATH=$(conda info --envs | grep "${ENV_NAME}" | awk '{print $NF}')
+
+# Check if the environment path was found
+if [ -z "${CONDA_ENV_PATH}" ]; then
+    echo "ERROR: Could not find Conda environment path for '${ENV_NAME}'." >&2
+    exit 1
+fi
+
+# Check if the environment's bin directory exists
+if [ ! -d "${CONDA_ENV_PATH}/bin" ]; then
+    echo "ERROR: bin directory not found in '${CONDA_ENV_PATH}'." >&2
+    exit 1
+fi
+
+# Prepend the environment's bin directory to the PATH
+export PATH="${CONDA_ENV_PATH}/bin:${PATH}"
+
+echo "Successfully set PATH for Conda environment."
+# --- End of Activation Block ---
+
 # This script normalizes single-population statistics (nSL, iHS, delihh, iHH12)
 # for SELECTION simulations using pre-computed normalization bins.
+# This version runs all commands directly on the host system without Docker.
 
 # Usage: ./09_normalize_onepop_stats.sh <stat_type>
 # <stat_type> can be: nsl, ihs, delihh, ihh12
@@ -23,8 +58,7 @@ LOG_FILE="${LOG_DIR}/normalize_onepop_${STAT_TYPE}.log"
 mkdir -p "${LOG_DIR}"
 exec &> >(tee -a "${LOG_FILE}")
 
-# --- Helper Functions (for host script) ---
-# Moved log_message definition to the top
+# --- Helper Functions ---
 log_message() {
     local type="$1"
     local message="$2"
@@ -41,6 +75,26 @@ case "$STAT_TYPE" in
         exit 1
         ;;
 esac
+
+# --- Initial Setup ---
+log_message "INFO" "Host Script (09_normalize_onepop_stats.sh for ${STAT_TYPE}) Started: $(date)"
+
+# --- Local Dependency Checks ---
+log_message "INFO" "Checking for local dependencies..."
+log_message "DEBUG" "Python interpreter being used is: $(which python3)"
+if ! command -v python3 &> /dev/null; then
+    log_message "ERROR" "'python3' command not found. Python 3 is required."
+    exit 1
+fi
+if ! python3 -c "import pandas" &> /dev/null; then
+    log_message "ERROR" "Python 'pandas' library not found. Please install it (e.g., 'pip install pandas')."
+    exit 1
+fi
+if ! python3 -c "import numpy" &> /dev/null; then
+    log_message "ERROR" "Python 'numpy' library not found. Please install it (e.g., 'pip install numpy')."
+    exit 1
+fi
+log_message "INFO" "All local dependencies found."
 
 # --- Host Configuration ---
 CONFIG_FILE="00config.json"
@@ -64,12 +118,9 @@ BIN_DIR="bin"
 NORM_OUTPUT_DIR="norm"                   
 RUNTIME_DIR="runtime"
 INPUT_CSV_FOR_SIM_IDS="nsl.sel.runtime.csv" 
-
-DOCKER_IMAGE_PYNORM="docker.io/tx56/deepsweep_simulator:latest" 
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---
-log_message "INFO" "Host Script (09_normalize_onepop_stats.sh for ${STAT_TYPE}) Started: $(date)"
 log_message "INFO" "Reference Pop (pop1): ${POP1_REF}"
 log_message "INFO" "Input stats from: ${ONEPOP_STATS_SEL_DIR}, Bin files from: ${BIN_DIR}, Output to: ${NORM_OUTPUT_DIR}"
 
@@ -89,47 +140,18 @@ if [ ! -f "${REQUIRED_BIN_FILE}" ]; then
 fi
 log_message "INFO" "Found required normalization bin file: ${REQUIRED_BIN_FILE}"
 
+# --- Main Logic ---
 
-if ! docker image inspect "$DOCKER_IMAGE_PYNORM" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYNORM} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_PYNORM"; then log_message "ERROR" "Failed to pull Docker image ${DOCKER_IMAGE_PYNORM}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYNORM} already exists locally."
-fi
-log_message "INFO" "Starting Docker container for normalizing ${STAT_TYPE}..."
-
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_REF="${POP1_REF}" \
-    -e CONTAINER_STAT_TYPE="${STAT_TYPE}" \
-    -e CONTAINER_ONEPOP_STATS_SEL_DIR="${ONEPOP_STATS_SEL_DIR}" \
-    -e CONTAINER_BIN_DIR="${BIN_DIR}" \
-    -e CONTAINER_NORM_OUTPUT_DIR="${NORM_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_FOR_SIM_IDS="${INPUT_CSV_FOR_SIM_IDS}" \
-    -e PYTHON_NORM_SCRIPT_NAME="${PYTHON_NORM_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_PYNORM" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
-
-cleanup_and_exit() {
-    log_container "Caught signal! Cleaning up temporary Python script..."
-    rm -f "./${PYTHON_NORM_SCRIPT_NAME}"
-    log_container "Exiting due to signal."
-    exit 130
+# Cleanup function to remove the temporary python script
+cleanup() {
+    log_message "INFO" "Cleaning up temporary Python script..."
+    rm -f "${PYTHON_NORM_SCRIPT_NAME}"
 }
-trap cleanup_and_exit INT TERM
-log_container "----------------------------------------------------"
-log_container "Container Script (Normalize One-Pop Stats for ${CONTAINER_STAT_TYPE}) Started: $(date)"
-log_container "----------------------------------------------------"
-log_container "Received STAT_TYPE: [${CONTAINER_STAT_TYPE}]"
-log_container "Received POP1_REF: [${CONTAINER_POP1_REF}]"
+trap cleanup INT TERM EXIT
 
-cat > "./${PYTHON_NORM_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
+# Create the Python normalization script
+log_message "INFO" "Creating Python helper script: ${PYTHON_NORM_SCRIPT_NAME}"
+cat > "${PYTHON_NORM_SCRIPT_NAME}" <<'PYTHON_SCRIPT_EOF'
 import sys
 import os
 import pandas as pd
@@ -277,45 +299,42 @@ if __name__ == "__main__":
     if normalize_statistic(sim_id_arg, pop1_ref_arg, stat_type_arg, onepop_stats_dir_arg, bin_dir_arg, norm_output_dir_arg): sys.exit(0)
     else: sys.exit(1)
 PYTHON_SCRIPT_EOF
-chmod +x "./${PYTHON_NORM_SCRIPT_NAME}"
-log_container "Python One-Pop Stats Normalization script created."
+chmod +x "${PYTHON_NORM_SCRIPT_NAME}"
 
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_FOR_SIM_IDS}"
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then log_container "CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."; exit 1; fi
-log_container "Reading all sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for normalizing ${CONTAINER_STAT_TYPE}..."
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+# Read sim_ids and start processing
+log_message "INFO" "Reading all sim_ids from ${INPUT_CSV_FILE_HOST} for normalizing ${STAT_TYPE}..."
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_HOST}" | sort -un)
+
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    log_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER}. Nothing to process."
+    log_message "WARNING" "No valid sim_ids found in ${INPUT_CSV_FILE_HOST}. Nothing to process."
 else
-    log_container "Found unique sim_ids for normalization: ${sim_ids_to_run[*]}"
+    log_message "INFO" "Found unique sim_ids for normalization: ${sim_ids_to_run[*]}"
     overall_start_time=$(date +%s)
     for current_sim_id in "${sim_ids_to_run[@]}"; do
-        log_container "--- Normalizing ${CONTAINER_STAT_TYPE} for sim_id: ${current_sim_id} ---"
-        python3 "./${PYTHON_NORM_SCRIPT_NAME}" "${current_sim_id}" "${CONTAINER_POP1_REF}" "${CONTAINER_STAT_TYPE}" "./${CONTAINER_ONEPOP_STATS_SEL_DIR}" "./${CONTAINER_BIN_DIR}" "./${CONTAINER_NORM_OUTPUT_DIR}"
+        log_message "INFO" "--- Normalizing ${STAT_TYPE} for sim_id: ${current_sim_id} ---"
+        python3 "./${PYTHON_NORM_SCRIPT_NAME}" \
+            "${current_sim_id}" \
+            "${POP1_REF}" \
+            "${STAT_TYPE}" \
+            "${ONEPOP_STATS_SEL_DIR}" \
+            "${BIN_DIR}" \
+            "${NORM_OUTPUT_DIR}"
+            
         python_exit_status=$?
-        if [ $python_exit_status -eq 0 ]; then log_container "Python normalization for ${CONTAINER_STAT_TYPE}, sim_id ${current_sim_id} completed successfully.";
+        if [ $python_exit_status -eq 0 ]; then
+            log_message "INFO" "Python normalization for ${STAT_TYPE}, sim_id ${current_sim_id} completed successfully."
         else
-            log_container "ERROR: Python normalization for ${CONTAINER_STAT_TYPE}, sim_id ${current_sim_id} FAILED with exit status ${python_exit_status}."
-            echo "sim_id,${current_sim_id},pop1_ref,${CONTAINER_POP1_REF},stat,${CONTAINER_STAT_TYPE},norm_status,failed_python_exit_${python_exit_status}" >> "./${CONTAINER_RUNTIME_DIR}/norm_onepop.${CONTAINER_STAT_TYPE}.error.log"
+            log_message "ERROR" "Python normalization for ${STAT_TYPE}, sim_id ${current_sim_id} FAILED with exit status ${python_exit_status}."
+            echo "sim_id,${current_sim_id},pop1_ref,${POP1_REF},stat,${STAT_TYPE},norm_status,failed_python_exit_${python_exit_status}" >> "${RUNTIME_DIR}/norm_onepop.${STAT_TYPE}.error.log"
         fi
     done
-    overall_end_time=$(date +%s); overall_runtime=$((overall_end_time - overall_start_time))
-    log_container "All sim_ids from CSV processed for ${CONTAINER_STAT_TYPE} normalization. Total time: ${overall_runtime}s"
-    echo "stat_type,${CONTAINER_STAT_TYPE},total_sim_ids_processed,${#sim_ids_to_run[@]},overall_norm_runtime,${overall_runtime},seconds" >> "./${CONTAINER_RUNTIME_DIR}/norm_onepop_summary.runtime.csv"
+    overall_end_time=$(date +%s)
+    overall_runtime=$((overall_end_time - overall_start_time))
+    log_message "INFO" "All sim_ids from CSV processed for ${STAT_TYPE} normalization. Total time: ${overall_runtime}s"
+    echo "stat_type,${STAT_TYPE},total_sim_ids_processed,${#sim_ids_to_run[@]},overall_norm_runtime,${overall_runtime},seconds" >> "${RUNTIME_DIR}/norm_onepop_summary.runtime.csv"
 fi
-rm -f "./${PYTHON_NORM_SCRIPT_NAME}"
-log_container "Python helper script removed."
-log_container "Normalization of ${CONTAINER_STAT_TYPE} for selection simulations finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (Normalize One-Pop Stats for ${CONTAINER_STAT_TYPE}) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
 
-# --- Host Post-run ---
-docker_exit_status=$?
-log_message "INFO" "Docker container (Normalize One-Pop Stats for ${STAT_TYPE}) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then log_message "INFO" "Script (Normalize One-Pop Stats for ${STAT_TYPE}) likely interrupted."; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then log_message "ERROR" "Docker container (Normalize One-Pop Stats for ${STAT_TYPE}) reported an error."; fi
+log_message "INFO" "Normalization of ${STAT_TYPE} for selection simulations finished."
 log_message "INFO" "----------------------------------------------------"
 log_message "INFO" "Host Script (09_normalize_onepop_stats.sh for ${STAT_TYPE}) Finished: $(date)"
 log_message "INFO" "----------------------------------------------------"

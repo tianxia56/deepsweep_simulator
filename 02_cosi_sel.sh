@@ -41,7 +41,6 @@ if [ -z "$RECOMBINATION_MAP_FILE_PATH" ] || [ "$RECOMBINATION_MAP_FILE_PATH" = "
 DEMOGRAPHIC_MODEL_DIR_REL_PATH="demographic_models"
 SELECTED_OUTPUT_DIR_NAME="selected_sims"
 RUNTIME_DIR_NAME="runtime"
-DOCKER_IMAGE="quay.io/ilya_broad/dockstore-tool-cosi2:latest"
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---
@@ -52,63 +51,65 @@ echo "Host: Total Selected Simulations: ${TOTAL_SELECTED_SIMULATIONS}"
 echo "Host: Demographic Model Basename: ${DEMOGRAPHIC_MODEL_BASENAME}"
 echo "----------------------------------------------------"
 echo "Host: Script execution directory: ${HOST_CWD}"
-BASE_DEMOGRAPHIC_MODEL_FILE_REL_PATH="${DEMOGRAPHIC_MODEL_DIR_REL_PATH}/$(basename "${DEMOGRAPHIC_MODEL_BASENAME}")"
+
+# Extract base name without the .par extension for constructing temp filenames
+DEMOGRAPHIC_MODEL_BASE_NAME_NO_EXT=$(basename "${DEMOGRAPHIC_MODEL_BASENAME%.par}")
+BASE_DEMOGRAPHIC_MODEL_FILE_REL_PATH="${DEMOGRAPHIC_MODEL_DIR_REL_PATH}/${DEMOGRAPHIC_MODEL_BASENAME}"
 echo "Host: Expected base demographic model file at: ${HOST_CWD}/${BASE_DEMOGRAPHIC_MODEL_FILE_REL_PATH}"
+
 if [ ! -f "${CONFIG_FILE}" ]; then echo "Host: CRITICAL ERROR: Configuration file '${CONFIG_FILE}' NOT FOUND. Exiting."; exit 1; fi
 if [ ! -f "${BASE_DEMOGRAPHIC_MODEL_FILE_REL_PATH}" ]; then echo "Host: CRITICAL ERROR: Base demographic model file '${BASE_DEMOGRAPHIC_MODEL_FILE_REL_PATH}' NOT FOUND. Exiting."; exit 1; fi
-echo "Host: All required input files that are checked are FOUND."
 
+# Check if 'coalescent' command exists locally
+if ! command -v coalescent &> /dev/null
+then
+    echo "Host: CRITICAL ERROR: 'coalescent' command could not be found. Please ensure cosi2 is installed and in your PATH. Exiting."
+    exit 1
+fi
+echo "Host: All required input files and local 'coalescent' executable are FOUND."
 
-if ! docker image inspect "$DOCKER_IMAGE" &> /dev/null; then echo "Host: Pulling $DOCKER_IMAGE..."; docker pull "$DOCKER_IMAGE"; fi
-echo "Host: Starting Docker container for selected simulations..."
-
-# --- Docker Execution ---
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_BASE_DEMO_MODEL_DIR_REL_PATH="${DEMOGRAPHIC_MODEL_DIR_REL_PATH}" \
-    -e CONTAINER_BASE_DEMO_MODEL_BASENAME="${DEMOGRAPHIC_MODEL_BASENAME}" \
-    -e CONTAINER_SELECTIVE_SWEEP_PARAMS="${SELECTIVE_SWEEP_PARAMS}" \
-    -e CONTAINER_TOTAL_SELECTED_SIMS="${TOTAL_SELECTED_SIMULATIONS}" \
-    -e CONTAINER_SELECTED_OUTPUT_DIR_NAME="${SELECTED_OUTPUT_DIR_NAME}" \
-    -e CONTAINER_RUNTIME_DIR_NAME="${RUNTIME_DIR_NAME}" \
-    "$DOCKER_IMAGE" /bin/bash <<'EOF_INNER'
-echo_container() { echo "Container: $1"; }
+echo_local() { echo "Host: $1"; }
 trap 'cleanup_and_exit' INT TERM
 current_coalescent_pid=""
-cleanup_and_exit() { if [ -n "$current_coalescent_pid" ] && kill -0 "$current_coalescent_pid" 2>/dev/null; then kill -TERM "$current_coalescent_pid"; fi; exit 130; }
+cleanup_and_exit() { 
+    echo_local "Received signal, attempting graceful shutdown..."
+    if [ -n "$current_coalescent_pid" ] && kill -0 "$current_coalescent_pid" 2>/dev/null; then 
+        echo_local "Killing running coalescent process (PID: $current_coalescent_pid)..."
+        kill -TERM "$current_coalescent_pid"
+        wait "$current_coalescent_pid" 2>/dev/null # Wait for it to actually die
+    fi; 
+    exit 130; 
+}
 
-BASE_DEMO_FILE_IN_CONTAINER="./${CONTAINER_BASE_DEMO_MODEL_DIR_REL_PATH}/${CONTAINER_BASE_DEMO_MODEL_BASENAME}"
-DEMO_MODEL_DIR_IN_CONTAINER="./${CONTAINER_BASE_DEMO_MODEL_DIR_REL_PATH}"
-# Recom map check inside container removed as requested. cosi2 will handle it.
-COSI_SAMPLED_LOCI_FILE="./${CONTAINER_RUNTIME_DIR_NAME}/cosi.sel.1.sampled_loci.csv"
+BASE_DEMO_FILE_LOCAL="./${DEMOGRAPHIC_MODEL_DIR_REL_PATH}/${DEMOGRAPHIC_MODEL_BASENAME}"
+DEMO_MODEL_DIR_LOCAL="./${DEMOGRAPHIC_MODEL_DIR_REL_PATH}"
+COSI_SAMPLED_LOCI_FILE="./${RUNTIME_DIR_NAME}/cosi.sel.1.sampled_loci.csv"
 
-# --- SIMULATION FUNCTION WITH RETRY/TIMEOUT LOGIC RESTORED ---
+# --- SIMULATION FUNCTION WITH RETRY/TIMEOUT LOGIC ---
 run_selected_simulation() {
     local sim_id=$1 
     local output_suffix_base="hap.${sim_id}"
     
-    local temp_par_filename="${CONTAINER_BASE_DEMO_MODEL_BASENAME}-${sim_id}.par"
-    local temp_par_filepath="${DEMO_MODEL_DIR_IN_CONTAINER}/${temp_par_filename}"
+    local temp_par_filename="${DEMOGRAPHIC_MODEL_BASE_NAME_NO_EXT}-${sim_id}.par"
+    local temp_par_filepath="${DEMO_MODEL_DIR_LOCAL}/${temp_par_filename}"
 
-    echo_container "Starting selected simulation for ID ${sim_id}, base output suffix ${output_suffix_base}"
-    mkdir -p "./${CONTAINER_SELECTED_OUTPUT_DIR_NAME}" 
-    mkdir -p "./${CONTAINER_RUNTIME_DIR_NAME}"
+    echo_local "Starting selected simulation for ID ${sim_id}, base output suffix ${output_suffix_base}"
+    mkdir -p "./${SELECTED_OUTPUT_DIR_NAME}" 
+    mkdir -p "./${RUNTIME_DIR_NAME}"
 
-    cp "${BASE_DEMO_FILE_IN_CONTAINER}" "${temp_par_filepath}"
-    if [ $? -ne 0 ]; then echo_container "ERROR: Failed to copy base .par file to ${temp_par_filepath}."; return 1; fi
+    cp "${BASE_DEMO_FILE_LOCAL}" "${temp_par_filepath}"
+    if [ $? -ne 0 ]; then echo_local "ERROR: Failed to copy base .par file to ${temp_par_filepath}."; return 1; fi
 
-    printf "%s\n" "${CONTAINER_SELECTIVE_SWEEP_PARAMS}" >> "${temp_par_filepath}"
-    if [ $? -ne 0 ]; then echo_container "ERROR: Failed to append sweep params to ${temp_par_filepath}."; rm "${temp_par_filepath}"; return 1; fi
+    printf "%s\n" "${SELECTIVE_SWEEP_PARAMS}" >> "${temp_par_filepath}"
+    if [ $? -ne 0 ]; then echo_local "ERROR: Failed to append sweep params to ${temp_par_filepath}."; rm -f "${temp_par_filepath}"; return 1; fi
 
     local attempt=0
-    local max_attempts=3
+    local max_attempts=100
     local success=false
 
     while [ "$success" = false ] && [ $attempt -lt $max_attempts ]; do
         attempt=$((attempt + 1))
-        echo_container "Attempt ${attempt}/${max_attempts} for sim ID ${sim_id}..."
+        echo_local "Attempt ${attempt}/${max_attempts} for sim ID ${sim_id}..."
         
         local start_time=$(date +%s)
         
@@ -116,7 +117,7 @@ run_selected_simulation() {
             -p "${temp_par_filepath}" \
             -v \
             --drop-singletons .25 \
-            --tped "./${CONTAINER_SELECTED_OUTPUT_DIR_NAME}/sel.${output_suffix_base}" \
+            --tped "./${SELECTED_OUTPUT_DIR_NAME}/sel.${output_suffix_base}" \
             -n 1 -M -r 0 &
         current_coalescent_pid=$!
 
@@ -126,7 +127,7 @@ run_selected_simulation() {
             sleep 1
             elapsed_seconds=$((elapsed_seconds + 1))
             if [ $elapsed_seconds -ge $timeout_seconds ]; then
-                echo_container "Timeout: Sim ID ${sim_id} (PID ${current_coalescent_pid}) exceeded ${timeout_seconds}s. Killing."
+                echo_local "Timeout: Sim ID ${sim_id} (PID ${current_coalescent_pid}) exceeded ${timeout_seconds}s. Killing."
                 kill -9 $current_coalescent_pid
                 wait $current_coalescent_pid 2>/dev/null
                 break
@@ -134,11 +135,11 @@ run_selected_simulation() {
         done
         
         if wait $current_coalescent_pid; then
-            echo_container "Sim ID ${sim_id} (attempt ${attempt}) completed successfully."
+            echo_local "Sim ID ${sim_id} (attempt ${attempt}) completed successfully."
             success=true
         else
             local exit_code=$?
-            echo_container "Sim ID ${sim_id} (attempt ${attempt}) failed (exit code ${exit_code}) or timed out. Retrying if attempts left..."
+            echo_local "Sim ID ${sim_id} (attempt ${attempt}) failed (exit code ${exit_code}) or timed out. Retrying if attempts left..."
             current_coalescent_pid=""
             if [ $attempt -lt $max_attempts ]; then sleep 2; fi
         fi
@@ -147,20 +148,22 @@ run_selected_simulation() {
     if [ "$success" = true ]; then
         local end_time=$(date +%s)
         local runtime_seconds=$((end_time - start_time))
-        echo "sim_id,${sim_id},sel_runtime,${runtime_seconds},seconds" >> "./${CONTAINER_RUNTIME_DIR_NAME}/cosi.sel.runtime.csv"
+        echo "sim_id,${sim_id},sel_runtime,${runtime_seconds},seconds" >> "./${RUNTIME_DIR_NAME}/cosi.sel.runtime.csv"
         echo "${sim_id}" >> "${COSI_SAMPLED_LOCI_FILE}"
     fi
 
-    rm "${temp_par_filepath}"
+    rm -f "${temp_par_filepath}" # Clean up the temporary parameter file
     if [ "$success" = true ]; then return 0; else return 1; fi
 }
 # --- END OF RESTORED LOGIC ---
 
-upper_limit_for_seq=$((${CONTAINER_TOTAL_SELECTED_SIMS} - 1))
-for i in $(seq 0 1 ${upper_limit_for_seq}); do if ! run_selected_simulation "${i}"; then echo_container "Selected sim ID ${i} failed critically."; fi; done
-EOF_INNER
+upper_limit_for_seq=$((${TOTAL_SELECTED_SIMULATIONS} - 1))
+for i in $(seq 0 1 ${upper_limit_for_seq}); do 
+    if ! run_selected_simulation "${i}"; then 
+        echo_local "Selected sim ID ${i} failed critically."
+        exit 1 # Exit if a simulation critically fails
+    fi; 
+done
 
-# --- Host Post-run ---
-docker_exit_status=$?
-echo "Host: Docker container (Selected Sims) finished with exit status: ${docker_exit_status}."
-exit ${docker_exit_status}
+echo "Host: All selected simulations completed."
+exit 0

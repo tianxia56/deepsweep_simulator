@@ -21,7 +21,7 @@ LOG_FILE="${LOG_DIR}/selscan_stats_${SIM_TYPE}.log" # Log file name now includes
 mkdir -p "${LOG_DIR}"
 exec &> >(tee -a "${LOG_FILE}")
 
-# --- Helper Functions (for host script) ---
+# --- Helper Functions ---
 log_message() {
     local type="$1"
     local message="$2"
@@ -69,7 +69,6 @@ else # sel
 fi
 
 RUNTIME_DIR="runtime" 
-DOCKER_IMAGE_SELSCAN="docker.io/tx56/deepsweep_simulator:latest"
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---
@@ -84,128 +83,96 @@ if [ ! -f "${CONFIG_FILE}" ]; then log_message "ERROR" "Configuration file '${CO
 mkdir -p "${SELSCAN_OUTPUT_DIR}"
 mkdir -p "${RUNTIME_DIR}" 
 
-INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
-if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then log_message "ERROR" "Input CSV file '${INPUT_CSV_FILE_HOST}' not found."; exit 1; fi
-numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
-if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV file '${INPUT_CSV_FILE_HOST}' has no numeric sim_ids in 2nd col."; fi
+INPUT_CSV_FILE_LOCAL="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_BASENAME}"
+if [ ! -f "${INPUT_CSV_FILE_LOCAL}" ]; then log_message "ERROR" "Input CSV file '${INPUT_CSV_FILE_LOCAL}' not found."; exit 1; fi
+numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_LOCAL}")
+if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV file '${INPUT_CSV_FILE_LOCAL}' has no numeric sim_ids in 2nd col."; fi
 
-if ! docker image inspect "$DOCKER_IMAGE_SELSCAN" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_SELSCAN} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_SELSCAN"; then log_message "ERROR" "Failed to pull Docker image ${DOCKER_IMAGE_SELSCAN}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_SELSCAN} already exists locally."
+# Check for local selscan executable
+if ! command -v selscan &> /dev/null; then
+    log_message "CRITICAL_ERROR" "'selscan' command not found. Please install selscan and ensure it's in your PATH. Exiting."
+    exit 1
 fi
-log_message "INFO" "Starting Docker container for Selscan (${SIM_TYPE})..."
+log_message "INFO" "Local 'selscan' executable found."
 
-# --- Docker Execution ---
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_TARGET="${POP1_TARGET_FOR_SELSCAN}" \
-    -e CONTAINER_INPUT_SIM_DIR="${INPUT_SIM_DIR}" \
-    -e CONTAINER_SELSCAN_OUTPUT_DIR="${SELSCAN_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_BASENAME="${INPUT_CSV_BASENAME}" \
-    -e CONTAINER_PATH_PREFIX="${PATH_PREFIX_FOR_FILES}" \
-    "$DOCKER_IMAGE_SELSCAN" /bin/bash <<'EOF_INNER'
+log_message "INFO" "Starting Selscan processing locally for ${SIM_TYPE} simulations..."
 
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
+# --- Selscan Execution (Local) ---
+log_message "INFO" "----------------------------------------------------"
+log_message "INFO" "Local Selscan Processing for ${SIM_TYPE} Started: $(date)"
+log_message "INFO" "----------------------------------------------------"
 
 cleanup_and_exit() {
-    log_container "Caught signal! Exiting due to signal."
+    log_message "INFO" "Caught signal! Exiting due to signal."
     exit 130
 }
 trap cleanup_and_exit INT TERM
 
-log_container "----------------------------------------------------"
-log_container "Container Script (Selscan Stats for ${CONTAINER_PATH_PREFIX}) Started: $(date)"
-log_container "----------------------------------------------------"
-# (Echo received ENV VARS - condensed for brevity)
-log_container "Received POP1_TARGET: [${CONTAINER_POP1_TARGET}]"
-log_container "Received INPUT_SIM_DIR: [./${CONTAINER_INPUT_SIM_DIR}]" # e.g. ./neutral_sims or ./selected_sims
-log_container "Received PATH_PREFIX: [${CONTAINER_PATH_PREFIX}]" # e.g. neut or sel
-
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_BASENAME}"
-
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then
-    log_container "CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."
-    exit 1
-fi
-
 run_selscan_for_sim() {
     local sim_id_from_csv=$1 
-    local target_pop_for_tped="${CONTAINER_POP1_TARGET}"
-    local current_path_prefix="${CONTAINER_PATH_PREFIX}" # "neut" or "sel"
+    local target_pop_for_tped="${POP1_TARGET_FOR_SELSCAN}"
+    local current_path_prefix="${PATH_PREFIX_FOR_FILES}" # "neut" or "sel"
 
     # TPED filename: e.g. ./neutral_sims/neut.hap.0_0_1.tped or ./selected_sims/sel.hap.0_0_1.tped
-    local tped_file="./${CONTAINER_INPUT_SIM_DIR}/${current_path_prefix}.hap.${sim_id_from_csv}_0_${target_pop_for_tped}.tped"
+    local tped_file="./${INPUT_SIM_DIR}/${current_path_prefix}.hap.${sim_id_from_csv}_0_${target_pop_for_tped}.tped"
     # Selscan output base: e.g. neut.0_pop1 or sel.0_pop1
     local base_name_selscan_out="${current_path_prefix}.${sim_id_from_csv}_pop${target_pop_for_tped}"
     
-    log_container "Processing sim_id ${sim_id_from_csv} for pop ${target_pop_for_tped} (type: ${current_path_prefix}) with TPED: ${tped_file}"
+    log_message "INFO" "Processing sim_id ${sim_id_from_csv} for pop ${target_pop_for_tped} (type: ${current_path_prefix}) with TPED: ${tped_file}"
 
     if [ ! -f "${tped_file}" ]; then
-        log_container "WARNING: TPED file ${tped_file} not found. Skipping selscan."
+        log_message "WARNING" "TPED file ${tped_file} not found. Skipping selscan for this simulation."
         return 1
     fi
 
-    mkdir -p "./${CONTAINER_SELSCAN_OUTPUT_DIR}"
-    mkdir -p "./${CONTAINER_RUNTIME_DIR}"
+    mkdir -p "./${SELSCAN_OUTPUT_DIR}"
+    mkdir -p "./${RUNTIME_DIR}"
 
     # nSL
-    log_container "Running selscan --nsl for ${base_name_selscan_out}"
+    log_message "INFO" "Running selscan --nsl for ${base_name_selscan_out}"
     local start_time_nsl=$(date +%s)
-    selscan --nsl --tped "${tped_file}" --out "./${CONTAINER_SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}" --threads 4
+    selscan --nsl --tped "${tped_file}" --out "./${SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}" --threads 4
     local end_time_nsl=$(date +%s)
     local runtime_nsl=$((end_time_nsl - start_time_nsl))
-    if [ -f "./${CONTAINER_SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}.nsl.out" ]; then
-        echo "sim_id,${sim_id_from_csv},pop_id,${target_pop_for_tped},nsl_runtime,${runtime_nsl},seconds" >> "./${CONTAINER_RUNTIME_DIR}/nsl.${current_path_prefix}.runtime.csv"
-        log_container "nSL for ${base_name_selscan_out} completed. Runtime: ${runtime_nsl}s"
+    if [ -f "./${SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}.nsl.out" ]; then
+        echo "sim_id,${sim_id_from_csv},pop_id,${target_pop_for_tped},nsl_runtime,${runtime_nsl},seconds" >> "./${RUNTIME_DIR}/nsl.${current_path_prefix}.runtime.csv"
+        log_message "INFO" "nSL for ${base_name_selscan_out} completed. Runtime: ${runtime_nsl}s"
     else
-        log_container "WARNING: nSL output file not found for ${base_name_selscan_out}."
+        log_message "WARNING" "nSL output file not found for ${base_name_selscan_out}. Selscan command might have failed."
     fi
     
     # iHH12
-    log_container "Running selscan --ihh12 for ${base_name_selscan_out}"
+    log_message "INFO" "Running selscan --ihh12 for ${base_name_selscan_out}"
     local start_time_ihh12=$(date +%s)
-    selscan --ihh12 --tped "${tped_file}" --out "./${CONTAINER_SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}" --threads 4
+    selscan --ihh12 --tped "${tped_file}" --out "./${SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}" --threads 4
     local end_time_ihh12=$(date +%s)
     local runtime_ihh12=$((end_time_ihh12 - start_time_ihh12))
-    if [ -f "./${CONTAINER_SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}.ihh12.out" ]; then
-        echo "sim_id,${sim_id_from_csv},pop_id,${target_pop_for_tped},ihh12_runtime,${runtime_ihh12},seconds" >> "./${CONTAINER_RUNTIME_DIR}/ihh12.${current_path_prefix}.runtime.csv"
-        log_container "iHH12 for ${base_name_selscan_out} completed. Runtime: ${runtime_ihh12}s"
+    if [ -f "./${SELSCAN_OUTPUT_DIR}/${base_name_selscan_out}.ihh12.out" ]; then
+        echo "sim_id,${sim_id_from_csv},pop_id,${target_pop_for_tped},ihh12_runtime,${runtime_ihh12},seconds" >> "./${RUNTIME_DIR}/ihh12.${current_path_prefix}.runtime.csv"
+        log_message "INFO" "iHH12 for ${base_name_selscan_out} completed. Runtime: ${runtime_ihh12}s"
     else
-        log_container "WARNING: iHH12 output file not found for ${base_name_selscan_out}."
+        log_message "WARNING" "iHH12 output file not found for ${base_name_selscan_out}. Selscan command might have failed."
     fi
 }
 
-log_container "Reading all sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for linear processing..."
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+log_message "INFO" "Reading all sim_ids from ${INPUT_CSV_FILE_LOCAL} for linear processing..."
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_LOCAL}" | sort -un)
 
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    log_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER}. Nothing to process."
+    log_message "WARNING" "No valid sim_ids found in ${INPUT_CSV_FILE_LOCAL}. Nothing to process."
 else
-    log_container "Found unique sim_ids to process (sorted): ${sim_ids_to_run[*]}"
+    log_message "INFO" "Found unique sim_ids to process (sorted): ${sim_ids_to_run[*]}"
     for sim_id_val in "${sim_ids_to_run[@]}"; do
         run_selscan_for_sim "$sim_id_val"
     done
-    log_container "All sim_ids from CSV processed by selscan for target population."
+    log_message "INFO" "All sim_ids from CSV processed by selscan for target population."
 fi
 
-log_container "Selscan processing for ${CONTAINER_PATH_PREFIX} simulations finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (Selscan Stats for ${CONTAINER_PATH_PREFIX}) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
-
-# --- Host Post-run ---
-docker_exit_status=$?
-log_message "INFO" "Docker container (Selscan Stats for ${SIM_TYPE}) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then log_message "INFO" "Script (Selscan Stats for ${SIM_TYPE}) likely interrupted by user (Ctrl+C)."; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then log_message "ERROR" "Docker container (Selscan Stats for ${SIM_TYPE}) reported an error."; fi
+log_message "INFO" "Selscan processing for ${SIM_TYPE} simulations finished."
 log_message "INFO" "----------------------------------------------------"
+log_message "INFO" "Local Selscan Processing for ${SIM_TYPE} Finished: $(date)"
+log_message "INFO" "----------------------------------------------------"
+
 log_message "INFO" "Host Script (03_selscan_stats.sh for ${SIM_TYPE}) Finished: $(date)"
 log_message "INFO" "----------------------------------------------------"
+exit 0

@@ -36,10 +36,8 @@ fi
 SELECTED_SIM_INPUT_DIR="selected_sims"     
 ISAFE_AND_SELSCAN_SEL_OUTPUT_DIR="one_pop_stats_sel" 
 RUNTIME_DIR="runtime"                       
-# CORRECTED: CSV file to get sim_ids from is nsl.sel.runtime.csv
 INPUT_CSV_FOR_ISAFE_BASENAME="nsl.sel.runtime.csv" 
 
-DOCKER_IMAGE_ISAFE="docker.io/tx56/deepsweep_simulator:latest"
 HOST_CWD=$(pwd)
 
 # --- Host-Side Pre-checks ---
@@ -52,7 +50,7 @@ echo "Host: Script execution directory: ${HOST_CWD}"
 echo "Host: TPED input directory: ${HOST_CWD}/${SELECTED_SIM_INPUT_DIR}"
 echo "Host: iSAFE output directory: ${HOST_CWD}/${ISAFE_AND_SELSCAN_SEL_OUTPUT_DIR}"
 echo "Host: Runtime stats directory: ${HOST_CWD}/${RUNTIME_DIR}"
-INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_FOR_ISAFE_BASENAME}" # Corrected
+INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${INPUT_CSV_FOR_ISAFE_BASENAME}" 
 echo "Host: Input CSV for sim_ids: ${INPUT_CSV_FILE_HOST}"
 
 if [ ! -f "${CONFIG_FILE}" ]; then
@@ -66,62 +64,21 @@ if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then
     echo "Host: CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_HOST}' not found. This script expects it to be present. Exiting."
     exit 1
 fi
-# nsl.sel.runtime.csv has sim_id in the first field (sim_id,pop_id,nsl_runtime,...)
-# but our awk logic expects it in the second if the first is "sim_id".
-# Let's adjust awk for nsl.sel.runtime.csv or ensure consistency.
-# The nsl/ihh12 runtime CSVs are: sim_id,${sim_id_from_csv},pop_id,${target_pop_for_tped},nsl_runtime,${runtime_nsl},seconds
-# So, the actual sim_id *value* is in the 2nd column.
+
 numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
 if [ "${numeric_data_rows}" -eq 0 ]; then
     echo "Host: WARNING: Input CSV file '${INPUT_CSV_FILE_HOST}' exists but no rows with a numeric second field (sim_id) were found."
 fi
 
-if ! docker image inspect "$DOCKER_IMAGE_ISAFE" &> /dev/null; then
-    echo "Host: Docker image ${DOCKER_IMAGE_ISAFE} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_ISAFE"; then
-        echo "Host: Failed to pull Docker image ${DOCKER_IMAGE_ISAFE}. Exiting."
-        exit 1
-    fi
-else
-    echo "Host: Docker image ${DOCKER_IMAGE_ISAFE} already exists locally."
+# Check for local isafe executable
+if ! command -v isafe &> /dev/null; then
+    echo "Host: CRITICAL ERROR: 'isafe' command not found. Please install iSAFE and ensure it's in your PATH. Exiting."
+    exit 1
 fi
-echo "Host: Starting Docker container for iSAFE processing (linear)..."
+echo "Host: Local 'isafe' executable found."
+echo "Host: Starting local iSAFE processing (linear)..."
 
-# --- Docker Execution ---
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_TARGET="${POP1_TARGET}" \
-    -e CONTAINER_SELECTED_SIM_INPUT_DIR="${SELECTED_SIM_INPUT_DIR}" \
-    -e CONTAINER_ISAFE_OUTPUT_DIR_ARG="${ISAFE_AND_SELSCAN_SEL_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_INPUT_CSV_FOR_ISAFE_BASENAME="${INPUT_CSV_FOR_ISAFE_BASENAME}" \
-    -e PYTHON_HELPER_SCRIPT_NAME="${PYTHON_HELPER_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_ISAFE" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-
-cleanup_and_exit() {
-    echo_container "Caught signal! Cleaning up any temp Python script..."
-    rm -f "./${PYTHON_HELPER_SCRIPT_NAME}"
-    echo_container "Exiting due to signal."
-    exit 130
-}
-trap cleanup_and_exit INT TERM
-
-echo_container "----------------------------------------------------"
-echo_container "Container Script (iSAFE Processing - Linear) Started: $(date)"
-echo_container "----------------------------------------------------"
-echo_container "CWD is $(pwd)"
-echo_container "Received POP1_TARGET: [${CONTAINER_POP1_TARGET}]"
-echo_container "Received SELECTED_SIM_INPUT_DIR: [./${CONTAINER_SELECTED_SIM_INPUT_DIR}]"
-echo_container "Received ISAFE_OUTPUT_DIR_ARG: [./${CONTAINER_ISAFE_OUTPUT_DIR_ARG}]"
-echo_container "Received RUNTIME_DIR: [./${CONTAINER_RUNTIME_DIR}]"
-echo_container "Received INPUT_CSV_FOR_ISAFE_BASENAME: [${CONTAINER_INPUT_CSV_FOR_ISAFE_BASENAME}]"
-echo_container "Python helper script will be: ./${PYTHON_HELPER_SCRIPT_NAME}"
-
+# --- Create Python Helper Script ---
 cat > "./${PYTHON_HELPER_SCRIPT_NAME}" <<'PYTHON_EOF'
 import subprocess
 import pandas as pd
@@ -248,70 +205,57 @@ if __name__ == "__main__":
         sys.exit(1)
 PYTHON_EOF
 chmod +x "./${PYTHON_HELPER_SCRIPT_NAME}"
-echo_container "Python helper script created and made executable."
+echo "Host: Python helper script created and made executable."
 
-INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_INPUT_CSV_FOR_ISAFE_BASENAME}" # Corrected var name
+cleanup_host_script() {
+    echo "Host: Caught signal! Cleaning up Python helper script..."
+    rm -f "./${PYTHON_HELPER_SCRIPT_NAME}"
+    echo "Host: Exiting due to signal."
+    exit 130
+}
+trap cleanup_host_script INT TERM
 
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE}" ]; then
-    echo_container "CRITICAL ERROR: Input CSV file '${INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE}' not found inside container. Exiting."
-    exit 1
-fi
+# --- Main Execution (Local Linear Processing) ---
+echo "Host: Reading all sim_ids from ${INPUT_CSV_FILE_HOST} for iSAFE processing..."
 
-# --- Main Execution in Container (Linear Processing) ---
-echo_container "Reading all sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE} for iSAFE processing..."
-
-# The nsl.sel.runtime.csv format is: sim_id,<sim_id_val>,pop_id,<pop_val>,nsl_runtime,...
-# So the sim_id value is in the second column ($2).
-mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE}" | sort -un)
+mapfile -t sim_ids_to_run < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_HOST}" | sort -un)
 
 if [ ${#sim_ids_to_run[@]} -eq 0 ]; then
-    echo_container "No valid sim_ids found in ${INPUT_CSV_FILE_IN_CONTAINER_FOR_ISAFE}. Nothing to process for iSAFE."
+    echo "Host: No valid sim_ids found in ${INPUT_CSV_FILE_HOST}. Nothing to process for iSAFE."
 else
-    echo_container "Found unique sim_ids to process with iSAFE (sorted): ${sim_ids_to_run[*]}"
+    echo "Host: Found unique sim_ids to process with iSAFE (sorted): ${sim_ids_to_run[*]}"
     for sim_id_val in "${sim_ids_to_run[@]}"; do
-        echo_container "--- Starting iSAFE processing for sim_id: ${sim_id_val} ---"
+        echo "Host: --- Starting iSAFE processing for sim_id: ${sim_id_val} ---"
         start_time_isafe=$(date +%s)
         
         python "./${PYTHON_HELPER_SCRIPT_NAME}" \
             "${sim_id_val}" \
-            "./${CONTAINER_SELECTED_SIM_INPUT_DIR}" \
-            "./${CONTAINER_ISAFE_OUTPUT_DIR_ARG}" \
-            "${CONTAINER_POP1_TARGET}"
+            "./${SELECTED_SIM_INPUT_DIR}" \
+            "./${ISAFE_AND_SELSCAN_SEL_OUTPUT_DIR}" \
+            "${POP1_TARGET}"
         
         python_exit_status=$?
         end_time_isafe=$(date +%s)
         runtime_isafe=$((end_time_isafe - start_time_isafe))
 
         if [ $python_exit_status -eq 0 ]; then
-            echo_container "Python script completed successfully for sim_id ${sim_id_val}."
-            echo "sim_id,${sim_id_val},pop_id,${CONTAINER_POP1_TARGET},isafe_runtime,${runtime_isafe},seconds,status,success" >> "./${CONTAINER_RUNTIME_DIR}/isafe.runtime.csv"
+            echo "Host: Python script completed successfully for sim_id ${sim_id_val}."
+            echo "sim_id,${sim_id_val},pop_id,${POP1_TARGET},isafe_runtime,${runtime_isafe},seconds,status,success" >> "./${RUNTIME_DIR}/isafe.runtime.csv"
         else
-            echo_container "Python script FAILED for sim_id ${sim_id_val} with exit status ${python_exit_status}."
-            echo "sim_id,${sim_id_val},pop_id,${CONTAINER_POP1_TARGET},isafe_runtime,${runtime_isafe},seconds,status,failed_python_exit_${python_exit_status}" >> "./${CONTAINER_RUNTIME_DIR}/isafe.runtime.csv"
+            echo "Host: Python script FAILED for sim_id ${sim_id_val} with exit status ${python_exit_status}."
+            echo "sim_id,${sim_id_val},pop_id,${POP1_TARGET},isafe_runtime,${runtime_isafe},seconds,status,failed_python_exit_${python_exit_status}" >> "./${RUNTIME_DIR}/isafe.runtime.csv"
         fi
-        echo_container "iSAFE processing for sim_id ${sim_id_val} took ${runtime_isafe}s."
-        echo_container "--- Finished iSAFE processing for sim_id: ${sim_id_val} ---"
+        echo "Host: iSAFE processing for sim_id ${sim_id_val} took ${runtime_isafe}s."
+        echo "Host: --- Finished iSAFE processing for sim_id: ${sim_id_val} ---"
     done
-    echo_container "All sim_ids from CSV processed by iSAFE."
+    echo "Host: All sim_ids from CSV processed by iSAFE."
 fi
 
 rm -f "./${PYTHON_HELPER_SCRIPT_NAME}"
-echo_container "Python helper script removed."
+echo "Host: Python helper script removed."
 
-echo_container "iSAFE processing for selection simulations finished."
-echo_container "----------------------------------------------------"
-echo_container "Container Script (iSAFE Processing - Linear) Finished: $(date)"
-echo_container "----------------------------------------------------"
-EOF_INNER
-
-# --- Host Post-run ---
-docker_exit_status=$?
-echo "Host: Docker container (iSAFE Processing - Linear) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then
-    echo "Host: Script (iSAFE Processing - Linear) likely interrupted by user (Ctrl+C)."
-elif [ ${docker_exit_status} -ne 0 ]; then
-    echo "Host: Docker container (iSAFE Processing - Linear) reported an error."
-fi
+echo "Host: iSAFE processing for selection simulations finished."
 echo "----------------------------------------------------"
 echo "Host Script (04_isafe.sh - Linear) Finished: $(date)"
 echo "----------------------------------------------------"
+exit 0

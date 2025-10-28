@@ -1,8 +1,33 @@
 #!/bin/bash
 
+# --- Bulletproof Bash and Conda Activation ---
+# 1. Ensure the script is running with Bash, not sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    # Re-execute the script with the same arguments using bash.
+    echo "Re-executing with /bin/bash..." >&2
+    exec /bin/bash "$0" "$@"
+fi
+
+# 2. Manually find and activate the Conda environment by manipulating the PATH.
+ENV_NAME="deepsweep_simulator"
+echo "Attempting to set PATH for Conda environment: ${ENV_NAME}"
+CONDA_ENV_PATH=$(conda info --envs | grep "${ENV_NAME}" | awk '{print $NF}')
+if [ -z "${CONDA_ENV_PATH}" ]; then
+    echo "ERROR: Could not find Conda environment path for '${ENV_NAME}'." >&2
+    exit 1
+fi
+if [ ! -d "${CONDA_ENV_PATH}/bin" ]; then
+    echo "ERROR: bin directory not found in '${CONDA_ENV_PATH}'." >&2
+    exit 1
+fi
+export PATH="${CONDA_ENV_PATH}/bin:${PATH}"
+echo "Successfully set PATH for Conda environment."
+# --- End of Activation Block ---
+
 # This script creates bin files for various statistics from NEUTRAL simulations,
 # which are used for normalization purposes later.
 # It processes one-population stats (nSL, iHS, delihh, iHH12) and two-population XPEHH stats.
+# This version runs all commands directly on the host system without Docker.
 
 # --- Python Helper Script Names ---
 PYTHON_ONEPOP_BINS_SCRIPT_NAME="create_onepop_norm_bins_core.py"
@@ -15,12 +40,32 @@ LOG_FILE="${LOG_DIR}/create_norm_bins.log" # Single log for this step
 mkdir -p "${LOG_DIR}"
 exec &> >(tee -a "${LOG_FILE}")
 
-# --- Helper Functions (for host script) ---
+# --- Helper Functions ---
 log_message() {
     local type="$1"
     local message="$2"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [${type}] - ${message}"
 }
+
+# --- Initial Setup ---
+log_message "INFO" "Host Script (08_create_norm_bins.sh) Started: $(date)"
+
+# --- Local Dependency Checks ---
+log_message "INFO" "Checking for local dependencies..."
+log_message "DEBUG" "Python interpreter being used is: $(which python3)"
+if ! command -v python3 &> /dev/null; then
+    log_message "ERROR" "'python3' command not found. Python 3 is required."
+    exit 1
+fi
+if ! python3 -c "import pandas" &> /dev/null; then
+    log_message "ERROR" "Python 'pandas' library not found. Please install it (e.g., 'pip install pandas')."
+    exit 1
+fi
+if ! python3 -c "import numpy" &> /dev/null; then
+    log_message "ERROR" "Python 'numpy' library not found. Please install it (e.g., 'pip install numpy')."
+    exit 1
+fi
+log_message "INFO" "All local dependencies found."
 
 # --- Host Configuration ---
 CONFIG_FILE="00config.json"
@@ -49,16 +94,15 @@ ONEPOP_STATS_NEUT_DIR="one_pop_stats_neut"
 HAPBIN_DIR="hapbin"                      
 BIN_OUTPUT_DIR="bin"                     
 RUNTIME_DIR="runtime"
-DOCKER_IMAGE_PYBINS="docker.io/tx56/deepsweep_simulator:latest"
 HOST_CWD=$(pwd)
 
-log_message "INFO" "Host Script (08_create_norm_bins.sh) Started: $(date)"
 log_message "INFO" "Reading configuration from ${CONFIG_FILE}"
 log_message "INFO" "Reference Pop (pop1): ${POP1_REF}, All Pop IDs: ${POP_IDS_ARRAY[*]}"
 log_message "INFO" "Input one-pop stats dir: ${ONEPOP_STATS_NEUT_DIR}"
 log_message "INFO" "Input XPEHH files from: ${HAPBIN_DIR} (for neutral)"
 log_message "INFO" "Output bin files to: ${BIN_OUTPUT_DIR}"
 
+# --- Pre-run Checks ---
 if [ ! -f "${CONFIG_FILE}" ]; then log_message "ERROR" "Config file '${CONFIG_FILE}' NOT FOUND."; exit 1; fi
 mkdir -p "${BIN_OUTPUT_DIR}"; mkdir -p "${RUNTIME_DIR}"
 INPUT_CSV_FILE_HOST="${HOST_CWD}/${RUNTIME_DIR}/${NEUTRAL_SIM_RUNTIME_CSV}"
@@ -66,14 +110,16 @@ if [ ! -f "${INPUT_CSV_FILE_HOST}" ]; then log_message "ERROR" "Input CSV '${INP
 numeric_data_rows=$(awk -F, '$2 ~ /^[0-9]+$/ {count++} END {print count+0}' "${INPUT_CSV_FILE_HOST}")
 if [ "${numeric_data_rows}" -eq 0 ]; then log_message "WARNING" "Input CSV '${INPUT_CSV_FILE_HOST}' has no numeric sim_ids in 2nd col."; fi
 
-if ! docker image inspect "$DOCKER_IMAGE_PYBINS" &> /dev/null; then
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYBINS} not found locally. Pulling..."
-    if ! docker pull "$DOCKER_IMAGE_PYBINS"; then log_message "ERROR" "Failed to pull Docker image ${DOCKER_IMAGE_PYBINS}."; exit 1; fi
-else
-    log_message "INFO" "Docker image ${DOCKER_IMAGE_PYBINS} already exists locally."
-fi
-log_message "INFO" "Starting Docker container for creating normalization bins..."
+# --- Main Logic ---
 
+# Cleanup function to remove temporary python scripts
+cleanup() {
+    log_message "INFO" "Cleaning up temporary Python scripts..."
+    rm -f "${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" "${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
+}
+trap cleanup INT TERM EXIT
+
+# Create a list of XPEHH population pairs to process
 XPEHH_PAIR_IDS_LIST=()
 for pop2_iter in "${POP_IDS_ARRAY[@]}"; do
     if [ "${pop2_iter}" -ne "${POP1_REF}" ]; then
@@ -82,39 +128,9 @@ for pop2_iter in "${POP_IDS_ARRAY[@]}"; do
 done
 XPEHH_PAIR_IDS_STR=$(IFS=,; echo "${XPEHH_PAIR_IDS_LIST[*]}")
 
-docker run --rm -i --init \
-    -u $(id -u):$(id -g) \
-    -v "${HOST_CWD}:/app_data" \
-    -w "/app_data" \
-    -e CONTAINER_POP1_REF="${POP1_REF}" \
-    -e CONTAINER_XPEHH_PAIR_IDS_STR="${XPEHH_PAIR_IDS_STR}" \
-    -e CONTAINER_ONEPOP_STATS_NEUT_DIR="${ONEPOP_STATS_NEUT_DIR}" \
-    -e CONTAINER_HAPBIN_DIR="${HAPBIN_DIR}" \
-    -e CONTAINER_BIN_OUTPUT_DIR="${BIN_OUTPUT_DIR}" \
-    -e CONTAINER_RUNTIME_DIR="${RUNTIME_DIR}" \
-    -e CONTAINER_NEUTRAL_SIM_RUNTIME_CSV="${NEUTRAL_SIM_RUNTIME_CSV}" \
-    -e PYTHON_ONEPOP_BINS_SCRIPT_NAME="${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" \
-    -e PYTHON_XPEHH_BINS_SCRIPT_NAME="${PYTHON_XPEHH_BINS_SCRIPT_NAME}" \
-    "$DOCKER_IMAGE_PYBINS" /bin/bash <<'EOF_INNER'
-
-# --- Container Initialization ---
-echo_container() { echo "Container: $1"; }
-log_container() { echo_container "$1"; } 
-cleanup_and_exit() {
-    log_container "Caught signal! Cleaning up temporary Python scripts..."
-    rm -f "./${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" "./${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
-    log_container "Exiting due to signal."
-    exit 130
-}
-trap cleanup_and_exit INT TERM
-log_container "----------------------------------------------------"
-log_container "Container Script (Create Norm Bins) Started: $(date)"
-log_container "----------------------------------------------------"
-log_container "Received POP1_REF: [${CONTAINER_POP1_REF}]"
-log_container "Received XPEHH_PAIR_IDS_STR: [${CONTAINER_XPEHH_PAIR_IDS_STR}]"
-
 # --- Create Python script for One-Population Stat Bins ---
-cat > "./${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" <<'PYTHON_ONEPOP_EOF'
+log_message "INFO" "Creating Python helper script: ${PYTHON_ONEPOP_BINS_SCRIPT_NAME}"
+cat > "${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" <<'PYTHON_ONEPOP_EOF'
 import os
 import pandas as pd
 import numpy as np
@@ -274,12 +290,11 @@ if __name__ == "__main__":
     else: print("Python OnePop: No iHH12 data to bin.")
     print(f"Python OnePop: Binned data generation complete. Output in '{bin_output_dir}' directory.")
 PYTHON_ONEPOP_EOF
-chmod +x "./${PYTHON_ONEPOP_BINS_SCRIPT_NAME}"
-log_container "Python One-Population Binning script created."
+chmod +x "${PYTHON_ONEPOP_BINS_SCRIPT_NAME}"
 
 # --- Create Python script for XPEHH Stat Bins ---
-# (PYTHON_XPEHH_BINS_SCRIPT_NAME heredoc remains the same as the last correct version)
-cat > "./${PYTHON_XPEHH_BINS_SCRIPT_NAME}" <<'PYTHON_XPEHH_EOF'
+log_message "INFO" "Creating Python helper script: ${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
+cat > "${PYTHON_XPEHH_BINS_SCRIPT_NAME}" <<'PYTHON_XPEHH_EOF'
 import os
 import numpy as np
 import pandas as pd
@@ -352,56 +367,42 @@ if __name__ == "__main__":
         else: print(f"Python XPEHH: No binned data generated for XPEHH pair {pair_id}.")
     print("Python XPEHH: XPEHH bin file generation complete.")
 PYTHON_XPEHH_EOF
-chmod +x "./${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
-log_container "Python XPEHH Binning script created."
+chmod +x "${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
 
-# --- Main Execution in Container ---
-INPUT_CSV_FILE_IN_CONTAINER="./${CONTAINER_RUNTIME_DIR}/${CONTAINER_NEUTRAL_SIM_RUNTIME_CSV}"
-if [ ! -f "${INPUT_CSV_FILE_IN_CONTAINER}" ]; then
-    log_container "CRITICAL ERROR: Input CSV '${INPUT_CSV_FILE_IN_CONTAINER}' not found. Exiting."
-    exit 1
-fi
-log_container "Reading all neutral sim_ids from ${INPUT_CSV_FILE_IN_CONTAINER} for bin creation..."
-mapfile -t neutral_sim_ids_array < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_IN_CONTAINER}" | sort -un)
+# --- Main Execution ---
+log_message "INFO" "Reading all neutral sim_ids from ${INPUT_CSV_FILE_HOST} for bin creation..."
+mapfile -t neutral_sim_ids_array < <(awk -F, '$2 ~ /^[0-9]+$/ {print $2}' "${INPUT_CSV_FILE_HOST}" | sort -un)
 NEUTRAL_SIM_IDS_COMMA_SEP=$(IFS=,; echo "${neutral_sim_ids_array[*]}")
+
 if [ -z "${NEUTRAL_SIM_IDS_COMMA_SEP}" ]; then
-    log_container "No neutral sim_ids found to process. Exiting bin creation."
+    log_message "WARNING" "No neutral sim_ids found to process. Exiting bin creation."
 else
-    log_container "Found neutral sim_ids for binning: ${NEUTRAL_SIM_IDS_COMMA_SEP}"
-    log_container "--- Starting One-Population Neutral Stats Binning ---"
+    log_message "INFO" "Found neutral sim_ids for binning: ${NEUTRAL_SIM_IDS_COMMA_SEP}"
+    
+    log_message "INFO" "--- Starting One-Population Neutral Stats Binning ---"
     python3 "./${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" \
         "${NEUTRAL_SIM_IDS_COMMA_SEP}" \
-        "${CONTAINER_POP1_REF}" \
-        "./${CONTAINER_ONEPOP_STATS_NEUT_DIR}" \
-        "./${CONTAINER_BIN_OUTPUT_DIR}"
-    if [ $? -eq 0 ]; then log_container "One-population neutral stats binning completed successfully."; else log_container "ERROR: Python script for one-population neutral stats binning FAILED."; fi
-    log_container "--- Finished One-Population Neutral Stats Binning ---"
-    if [ -z "${CONTAINER_XPEHH_PAIR_IDS_STR}" ]; then
-        log_container "No XPEHH pairs defined. Skipping XPEHH binning."
+        "${POP1_REF}" \
+        "${ONEPOP_STATS_NEUT_DIR}" \
+        "${BIN_OUTPUT_DIR}"
+    if [ $? -eq 0 ]; then log_message "INFO" "One-population neutral stats binning completed successfully."; else log_message "ERROR" "Python script for one-population neutral stats binning FAILED."; fi
+    log_message "INFO" "--- Finished One-Population Neutral Stats Binning ---"
+    
+    if [ -z "${XPEHH_PAIR_IDS_STR}" ]; then
+        log_message "INFO" "No XPEHH pairs defined. Skipping XPEHH binning."
     else
-        log_container "--- Starting XPEHH Neutral Stats Binning for pairs: ${CONTAINER_XPEHH_PAIR_IDS_STR} ---"
+        log_message "INFO" "--- Starting XPEHH Neutral Stats Binning for pairs: ${XPEHH_PAIR_IDS_STR} ---"
         python3 "./${PYTHON_XPEHH_BINS_SCRIPT_NAME}" \
             "${NEUTRAL_SIM_IDS_COMMA_SEP}" \
-            "${CONTAINER_XPEHH_PAIR_IDS_STR}" \
-            "./${CONTAINER_HAPBIN_DIR}" \
-            "./${CONTAINER_BIN_OUTPUT_DIR}"
-        if [ $? -eq 0 ]; then log_container "XPEHH neutral stats binning completed successfully."; else log_container "ERROR: Python script for XPEHH neutral stats binning FAILED."; fi
-        log_container "--- Finished XPEHH Neutral Stats Binning ---"
+            "${XPEHH_PAIR_IDS_STR}" \
+            "${HAPBIN_DIR}" \
+            "${BIN_OUTPUT_DIR}"
+        if [ $? -eq 0 ]; then log_message "INFO" "XPEHH neutral stats binning completed successfully."; else log_message "ERROR" "Python script for XPEHH neutral stats binning FAILED."; fi
+        log_message "INFO" "--- Finished XPEHH Neutral Stats Binning ---"
     fi
 fi
-rm -f "./${PYTHON_ONEPOP_BINS_SCRIPT_NAME}" "./${PYTHON_XPEHH_BINS_SCRIPT_NAME}"
-log_container "Python helper scripts removed."
-log_container "Normalization bin creation process finished."
-log_container "----------------------------------------------------"
-log_container "Container Script (Create Norm Bins) Finished: $(date)"
-log_container "----------------------------------------------------"
-EOF_INNER
 
-# --- Host Post-run ---
-docker_exit_status=$?
-log_message "INFO" "Docker container (Create Norm Bins) finished with exit status: ${docker_exit_status}."
-if [ ${docker_exit_status} -eq 130 ]; then log_message "INFO" "Script (Create Norm Bins) likely interrupted."; fi
-if [ ${docker_exit_status} -ne 0 ] && [ ${docker_exit_status} -ne 130 ]; then log_message "ERROR" "Docker container (Create Norm Bins) reported an error."; fi
+log_message "INFO" "Normalization bin creation process finished."
 log_message "INFO" "----------------------------------------------------"
 log_message "INFO" "Host Script (08_create_norm_bins.sh) Finished: $(date)"
 log_message "INFO" "----------------------------------------------------"

@@ -1,16 +1,31 @@
-# DeepSweep Simulator Showcase (Local Execution)
+# DeepSweep Simulator Showcase (Local Single-Thread Execution)
 
-This repository provides a showcase for generating simulated genotypes and compute population genetics statistics to detect selective signatures, originally designed for a cluster environment, on a local machine in a linear fashion. 
+This repository provides a showcase for generating simulated genotypes and computing population genetics statistics to detect selective signatures. While originally designed for a cluster environment, this version is configured for local, single-threaded execution.
 
-## Env install
+## Environment Setup
 
-*   **Docker:** This pipeline relies on Docker to run containerized tools.
-*   run ```bash deepsweep_simulator_env.sh``` and test each individual tool by:
-    *   isafe -h
-    *   ihsbin -h
-    *   xpehhbin -h
-    *   selscan --help
-    *   R --version
+This pipeline relies on a Conda environment for managing dependencies.
+
+To set up the required environment:
+
+1.  **Run the setup script:**
+    ```bash
+    bash deepsweep_simulator_env.sh
+    ```
+    This script will create and configure a Conda environment named `deepsweep_simulator`.
+
+2.  **Activate the environment:**
+    ```bash
+    conda activate deepsweep_simulator
+    ```
+
+3.  **Verify tool installations:**
+    After activation, you can test each installed tool by running its help command:
+    *   `isafe -h`
+    *   `ihsbin -h`
+    *   `xpehhbin -h`
+    *   `selscan --help`
+    *   `R --version`
 
 ## How to use
 
@@ -35,13 +50,13 @@ This repository provides a showcase for generating simulated genotypes and compu
         "selected_simulation_number": 2,
         "simulation_serial_number": 1,
         "neutral_simulation_number": 2,
-        "demographic_model": "jv_default_112115_825am.par",
+        "demographic_model": "gravel.par",
         "recombination_map": "test_recom.recom",
         "selective_sweep": "pop_event sweep_mult_standing \"sweep\" 1 U(0, 5000) E(20) .5 .05-.95 1 U(0, 5000)",
         "selected_pop": 1,
         "pos_sel_position": 1500000,
         "simulation_length": 3000000,
-        "pop_ids": [1, 2, 3, 4]
+        "pop_ids": [1, 2, 3]
     }
     ```
 
